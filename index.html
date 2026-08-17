@@ -9617,7 +9617,6 @@ function renderQuotePreview(replyTo) {
         <div class="reply-preview" data-reply-msg-id="${finalMsgId}" style="cursor:pointer; transition:background 0.2s; padding:4px 8px; border-radius:8px; background:#f0f0f0;">
             <span class="reply-sender" style="font-weight:600; color:#07c160;">${escapeHtml(replyTo.senderName)}：</span>
             ${contentHtml}
-            <span style="font-size:10px; color:#8e8e93; margin-left:4px;">↩️</span>
         </div>
     `;
 }
@@ -14734,6 +14733,124 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
             var penalty = 80;
             
             if (isNPCPlayer) {
+                // ===== 好友有概率向你求助（只有好友，不是NPC） =====
+                var askYouForHelp = false;
+                if (isFriend && Math.random() < 0.3) {
+                    askYouForHelp = true;
+                }
+                
+                if (askYouForHelp) {
+                    // 生成选项HTML（供你选择正确答案帮好友）
+                    var optionsHtmlForHelp = '';
+                    for (var i = 0; i < riddle.options.length; i++) {
+                        var letter = String.fromCharCode(65 + i);
+                        optionsHtmlForHelp += '<div class="riddle-option" data-option="' + i + '" style="padding:8px 12px;margin:4px 0;background:#f5f5f5;border-radius:8px;cursor:pointer;border:1px solid #ddd;">' + letter + '. ' + escapeHtml(riddle.options[i]) + '</div>';
+                    }
+                    
+                    var helpModalHtml = `
+                        <div class="modal-container" style="width: 90%; max-width: 420px; padding: 20px; border-radius: 16px; text-align: center;">
+                            <div style="font-size: 18px; font-weight: 600; margin-bottom: 4px; color: #ff9500;">🙋 ${escapeHtml(player.displayName)} 向你求助！</div>
+                            <div style="font-size: 14px; color: #8e8e93; margin-bottom: 14px; background: #f5f0eb; padding: 12px 16px; border-radius: 10px; line-height: 1.6; min-height: 50px;">
+                                ${escapeHtml(riddle.question)}
+                            </div>
+                            <div style="font-size: 13px; color: #8e8e93; margin-bottom: 12px;">
+                                答对 ${escapeHtml(player.displayName)} +${reward} 金币 | 答错 -${penalty} 金币
+                            </div>
+                            <div style="text-align:left; margin-bottom: 8px;">
+                                ${optionsHtmlForHelp}
+                            </div>
+                            <div style="display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap;">
+                                <button id="helpFriendCorrectBtn" style="flex: 1; min-width: 80px; background: #07c160; padding: 8px; font-size: 12px; border: none; color: white; border-radius: 14px; cursor: pointer;">✅ 帮TA选对的</button>
+                                <button id="helpFriendWrongBtn" style="flex: 1; min-width: 80px; background: #ff3b30; padding: 8px; font-size: 12px; border: none; color: white; border-radius: 14px; cursor: pointer;">❌ 故意选错的</button>
+                                <button id="helpFriendSkipBtn" style="flex: 1; min-width: 80px; background: #888; padding: 8px; font-size: 12px; border: none; color: white; border-radius: 14px; cursor: pointer;">⏭️ 不帮忙</button>
+                            </div>
+                        </div>
+                    `;
+                    var helpModal = showModal(helpModalHtml);
+                    
+                    // 帮好友选正确答案
+                    var correctBtn = helpModal.querySelector('#helpFriendCorrectBtn');
+                    if (correctBtn) {
+                        correctBtn.onclick = function() {
+                            helpModal.remove();
+                            player.money += reward;
+                            player.totalMoney += reward;
+                            setEventLog(gameState, '你帮 ' + player.displayName + ' 答对了！+' + reward + ' 金币 🎉', '#07c160');
+                            gameState.waitingForRoll = true;
+                            renderMonopolyMap(gameState, mapContainer);
+                            updateMonopolyStatus(gameState, 'gameStatusBar');
+                            if (callback) callback(false);
+                        };
+                    }
+                    
+                    // 故意选错的
+                    var wrongBtn = helpModal.querySelector('#helpFriendWrongBtn');
+                    if (wrongBtn) {
+                        wrongBtn.onclick = function() {
+                            helpModal.remove();
+                            player.money -= penalty;
+                            player.totalMoney -= penalty;
+                            if (player.money < 0) player.money = 0;
+                            setEventLog(gameState, '你故意让 ' + player.displayName + ' 答错了！-' + penalty + ' 金币 😈', '#ff3b30');
+                            gameState.waitingForRoll = true;
+                            renderMonopolyMap(gameState, mapContainer);
+                            updateMonopolyStatus(gameState, 'gameStatusBar');
+                            if (callback) callback(false);
+                        };
+                    }
+                    
+                    // 不帮忙
+                    var skipHelpBtn = helpModal.querySelector('#helpFriendSkipBtn');
+                    if (skipHelpBtn) {
+                        skipHelpBtn.onclick = function() {
+                            helpModal.remove();
+                            var isCorrect = Math.random() < 0.5;
+                            if (isCorrect) {
+                                player.money += reward;
+                                player.totalMoney += reward;
+                                setEventLog(gameState, player.displayName + ' 自己答对了 +' + reward + ' 金币', '#07c160');
+                            } else {
+                                player.money -= penalty;
+                                player.totalMoney -= penalty;
+                                if (player.money < 0) player.money = 0;
+                                setEventLog(gameState, player.displayName + ' 自己答错了 -' + penalty + ' 金币', '#ff3b30');
+                            }
+                            gameState.waitingForRoll = true;
+                            renderMonopolyMap(gameState, mapContainer);
+                            updateMonopolyStatus(gameState, 'gameStatusBar');
+                            if (callback) callback(false);
+                        };
+                    }
+                    
+                    // 也可以点击选项直接帮好友选
+                    var optionElsForHelp = helpModal.querySelectorAll('.riddle-option');
+                    for (var i = 0; i < optionElsForHelp.length; i++) {
+                        (function(el) {
+                            el.onclick = function() {
+                                var selected = parseInt(el.dataset.option);
+                                var isCorrect = (selected === riddle.answer);
+                                helpModal.remove();
+                                if (isCorrect) {
+                                    player.money += reward;
+                                    player.totalMoney += reward;
+                                    setEventLog(gameState, '你帮 ' + player.displayName + ' 答对了！+' + reward + ' 金币 🎉', '#07c160');
+                                } else {
+                                    player.money -= penalty;
+                                    player.totalMoney -= penalty;
+                                    if (player.money < 0) player.money = 0;
+                                    setEventLog(gameState, '你帮 ' + player.displayName + ' 答错了！-' + penalty + ' 金币 😅', '#ff3b30');
+                                }
+                                gameState.waitingForRoll = true;
+                                renderMonopolyMap(gameState, mapContainer);
+                                updateMonopolyStatus(gameState, 'gameStatusBar');
+                                if (callback) callback(false);
+                            };
+                        })(optionElsForHelp[i]);
+                    }
+                    return;
+                }
+                
+                // ===== 原有的 NPC/好友 自动作答逻辑（保留） =====
                 var isCorrect = Math.random() < 0.5;
                 setTimeout(function() {
                     if (isCorrect) {
@@ -14754,16 +14871,17 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
                 return;
             }
             
+            // ===== 玩家（你）遇到脑筋急转弯 - 可以向好友求助 =====
             var optionsHtml = '';
             for (var i = 0; i < riddle.options.length; i++) {
                 var letter = String.fromCharCode(65 + i);
                 optionsHtml += '<div class="riddle-option" data-option="' + i + '" style="padding:8px 12px;margin:4px 0;background:#f5f5f5;border-radius:8px;cursor:pointer;border:1px solid #ddd;">' + letter + '. ' + escapeHtml(riddle.options[i]) + '</div>';
             }
             
+            var helpSuccessRate = 0.5;
             var modalHtml = `
                 <div class="modal-container" style="width: 90%; max-width: 400px; padding: 20px; border-radius: 16px; text-align: center;">
-                    <div style="font-size: 40px; margin-bottom: 6px;">🧠</div>
-                    <div style="font-size: 18px; font-weight: 600; margin-bottom: 4px; color: #4a3a2a;">脑筋急转弯</div>
+                    <div style="font-size: 18px; font-weight: 600; margin-bottom: 4px; color: #4a3a2a;">🧠 脑筋急转弯</div>
                     <div style="font-size: 14px; color: #8e8e93; margin-bottom: 14px; background: #f5f0eb; padding: 12px 16px; border-radius: 10px; line-height: 1.6; min-height: 50px;">
                         ${escapeHtml(riddle.question)}
                     </div>
@@ -14773,7 +14891,10 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
                     <div style="text-align:left; margin-bottom: 12px;">
                         ${optionsHtml}
                     </div>
-                    <button id="riddleSkipBtn" style="background: #888; padding: 4px 16px; font-size: 11px; border: none; color: white; border-radius: 14px; cursor: pointer;">跳过（不扣钱）</button>
+                    <div style="display: flex; gap: 8px; margin-top: 4px;">
+                        <button id="riddleAskFriendBtn" style="flex: 1; background: #ff9500; padding: 6px; font-size: 12px; border: none; color: white; border-radius: 14px; cursor: pointer;">🙋 求助好友（${Math.round(helpSuccessRate * 100)}%成功）</button>
+                        <button id="riddleSkipBtn" style="flex: 1; background: #888; padding: 6px; font-size: 12px; border: none; color: white; border-radius: 14px; cursor: pointer;">跳过（不扣钱）</button>
+                    </div>
                 </div>
             `;
             
@@ -14788,6 +14909,43 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
                     renderMonopolyMap(gameState, mapContainer);
                     updateMonopolyStatus(gameState, 'gameStatusBar');
                     if (callback) callback(false);
+                };
+            }
+            
+            var askBtn = modal.querySelector('#riddleAskFriendBtn');
+            if (askBtn) {
+                askBtn.onclick = function() {
+                    modal.remove();
+                    var friendHelpChance = Math.random() < helpSuccessRate;
+                    if (friendHelpChance) {
+                        var correctAnswer = riddle.answer;
+                        var helpMsg = '答案是 ' + String.fromCharCode(65 + correctAnswer) + '！';
+                        setEventLog(gameState, '好友帮了你一把！答案：' + helpMsg, '#07c160');
+                        player.money += reward;
+                        player.totalMoney += reward;
+                        setEventLog(gameState, '答对了！+' + reward + ' 金币', '#07c160');
+                        gameState.waitingForRoll = true;
+                        renderMonopolyMap(gameState, mapContainer);
+                        updateMonopolyStatus(gameState, 'gameStatusBar');
+                        if (callback) callback(false);
+                    } else {
+                        var wrongHint = Math.random() < 0.5;
+                        if (wrongHint) {
+                            var wrongOptions = [];
+                            for (var wi = 0; wi < riddle.options.length; wi++) {
+                                if (wi !== riddle.answer) wrongOptions.push(wi);
+                            }
+                            var wrongIdx = wrongOptions[Math.floor(Math.random() * wrongOptions.length)];
+                            var wrongLetter = String.fromCharCode(65 + wrongIdx);
+                            setEventLog(gameState, '好友也不确定... 感觉可能是 ' + wrongLetter + '？😅', '#ff9500');
+                            gameState.waitingForRoll = false;
+                            showRiddleWithoutHelp(riddle, reward, penalty, player, gameState, mapContainer, callback);
+                        } else {
+                            setEventLog(gameState, '好友也不会...你自己加油吧！', '#ff9500');
+                            gameState.waitingForRoll = false;
+                            showRiddleWithoutHelp(riddle, reward, penalty, player, gameState, mapContainer, callback);
+                        }
+                    }
                 };
             }
             
@@ -15002,6 +15160,72 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
     }
     
     if (callback) callback(false);
+}
+
+// ===== 新增：显示不带求助按钮的脑筋急转弯 =====
+function showRiddleWithoutHelp(riddle, reward, penalty, player, gameState, mapContainer, callback) {
+    var optionsHtml = '';
+    for (var i = 0; i < riddle.options.length; i++) {
+        var letter = String.fromCharCode(65 + i);
+        optionsHtml += '<div class="riddle-option" data-option="' + i + '" style="padding:8px 12px;margin:4px 0;background:#f5f5f5;border-radius:8px;cursor:pointer;border:1px solid #ddd;">' + letter + '. ' + escapeHtml(riddle.options[i]) + '</div>';
+    }
+    
+    var modalHtml = `
+        <div class="modal-container" style="width: 90%; max-width: 400px; padding: 20px; border-radius: 16px; text-align: center;">
+            <div style="font-size: 18px; font-weight: 600; margin-bottom: 4px; color: #4a3a2a;">🧠 脑筋急转弯</div>
+            <div style="font-size: 14px; color: #8e8e93; margin-bottom: 14px; background: #f5f0eb; padding: 12px 16px; border-radius: 10px; line-height: 1.6; min-height: 50px;">
+                ${escapeHtml(riddle.question)}
+            </div>
+            <div style="font-size: 13px; color: #8e8e93; margin-bottom: 12px;">
+                答对 +${reward} 金币 | 答错 -${penalty} 金币
+            </div>
+            <div style="text-align:left; margin-bottom: 12px;">
+                ${optionsHtml}
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 4px;">
+                <button id="riddleSkipBtn2" style="flex: 1; background: #888; padding: 6px; font-size: 12px; border: none; color: white; border-radius: 14px; cursor: pointer;">跳过（不扣钱）</button>
+            </div>
+        </div>
+    `;
+    
+    var modal = showModal(modalHtml);
+    
+    var skipBtn = modal.querySelector('#riddleSkipBtn2');
+    if (skipBtn) {
+        skipBtn.onclick = function() {
+            modal.remove();
+            setEventLog(gameState, '跳过了脑筋急转弯', '#888');
+            gameState.waitingForRoll = true;
+            renderMonopolyMap(gameState, mapContainer);
+            updateMonopolyStatus(gameState, 'gameStatusBar');
+            if (callback) callback(false);
+        };
+    }
+    
+    var optionEls = modal.querySelectorAll('.riddle-option');
+    for (var i = 0; i < optionEls.length; i++) {
+        (function(el) {
+            el.onclick = function() {
+                var selected = parseInt(el.dataset.option);
+                var isCorrect = (selected === riddle.answer);
+                modal.remove();
+                if (isCorrect) {
+                    player.money += reward;
+                    player.totalMoney += reward;
+                    setEventLog(gameState, '答对了！+' + reward + ' 金币', '#07c160');
+                } else {
+                    player.money -= penalty;
+                    player.totalMoney -= penalty;
+                    if (player.money < 0) player.money = 0;
+                    setEventLog(gameState, '答错了！-' + penalty + ' 金币', '#ff3b30');
+                }
+                gameState.waitingForRoll = true;
+                renderMonopolyMap(gameState, mapContainer);
+                updateMonopolyStatus(gameState, 'gameStatusBar');
+                if (callback) callback(false);
+            };
+        })(optionEls[i]);
+    }
 }
 
 function doAITurn(gameState) {
@@ -15433,28 +15657,72 @@ function startGame(sessionId, friendId, friend, game, mode, myColor) {
         setTimeout(function() {
             startMonopolyGame(sessionId, friendId, friend, mode, gameWin);
         }, 100);
+        
+        // ===== 🎯 大富翁聊天绑定（关键修复） =====
+        setTimeout(function() {
+            var chatInput = gameWin.querySelector('#gameChatInput');
+            var chatSendBtn = gameWin.querySelector('#gameChatSendBtn');
+            var chatMessages = gameWin.querySelector('#gameChatMessages');
+            
+            if (chatSendBtn && chatInput && chatMessages) {
+                chatSendBtn.onclick = function() {
+                    var text = chatInput.value.trim();
+                    if (!text) return;
+                    var time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    chatMessages.innerHTML += `<div style="font-size:12px;padding:2px 0;">[${time}] 我：${escapeHtml(text)}</div>`;
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                    chatInput.value = '';
+                };
+                chatInput.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        chatSendBtn.click();
+                    }
+                });
+            }
+        }, 500);
         return;
     }
     
-    let chatInput = gameWin.querySelector('#gameChatInput');
-    let chatSendBtn = gameWin.querySelector('#gameChatSendBtn');
-    let chatMessages = gameWin.querySelector('#gameChatMessages');
+    // ===== 聊天功能（五子棋专用） =====
+    var chatInput = gameWin.querySelector('#gameChatInput');
+    var chatSendBtn = gameWin.querySelector('#gameChatSendBtn');
+    var chatMessages = gameWin.querySelector('#gameChatMessages');
+
+    if (chatSendBtn && chatInput && chatMessages) {
+        chatSendBtn.onclick = function() {
+            var text = chatInput.value.trim();
+            if (!text) return;
+            var time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            chatMessages.innerHTML += `<div style="font-size:12px;padding:2px 0;">[${time}] 我：${escapeHtml(text)}</div>`;
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            chatInput.value = '';
+            if (Math.random() < 0.15 && gameState && gameState._friend) {
+                setTimeout(function() {
+                    var reply = generateGameChatReply(gameState._friendId);
+                    if (reply) {
+                        var space = getCoupleSpace(gameState._friendId);
+                        var displayName = (space && space.enabled && space.nickname) ? space.nickname : gameState._friend.name;
+                        var time2 = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        chatMessages.innerHTML += `<div style="font-size:12px;padding:2px 0;">[${time2}] ${escapeHtml(displayName)}：${escapeHtml(reply)}</div>`;
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    }
+                }, 3000 + Math.random() * 5000);
+            }
+        };
+        chatInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                chatSendBtn.click();
+            }
+        });
+    }
     
     function sendGameChat() {
-        let text = chatInput.value.trim();
+        var text = chatInput.value.trim();
         if (!text) return;
         var time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         chatMessages.innerHTML += `<div style="font-size:12px;padding:2px 0;">[${time}] 我：${escapeHtml(text)}</div>`;
         chatMessages.scrollTop = chatMessages.scrollHeight;
         chatInput.value = '';
-        if (Math.random() < 0.1) {
-            setTimeout(function() {
-                let reply = generateGameChatReply(friendId);
-                if (reply) {
-                    addGameComment(gameWin, displayName, reply);
-                }
-            }, Math.random() * 50000 + 10000);
-        }
     }
     
     if (chatSendBtn) chatSendBtn.onclick = sendGameChat;
