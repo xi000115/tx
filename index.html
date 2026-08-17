@@ -1738,6 +1738,9 @@ body, .app, .page, .settings-item, button, input, textarea, .bubble, .moment-con
 <script>
 
 // ==================== 数据模型扩展 ====================
+// 用于记录当前查看战绩的游戏名称
+var currentHistoryGame = null;
+
 let appData = {
     user: { id: "self", name: "诗远", avatar: "🌙", tags: "浪漫主义者", mood: "自在", weather: "晴" },
     friends: [
@@ -9692,7 +9695,7 @@ function clearNewMsgBubble(sessionId) {
 }
 
 // ==================== 消息发送核心函数 ====================
-function sendMessage(sessionId, text, fromSelf = true, senderInfo = null, isPat = false, isVote = false, voteData = null, replyTo = null, isQuestionnaire = false, questionnaireId = null) {
+function sendMessage(sessionId, text, fromSelf = true, senderInfo = null, isPat = false, isVote = false, voteData = null, replyTo = null, isQuestionnaire = false, questionnaireId = null, extra = null) {
     // 安全处理 text
     if (typeof text !== 'string') text = String(text || '');
     if (!text.trim() && !isVote && !isQuestionnaire) return;
@@ -9745,6 +9748,9 @@ let msg = {
     isPat: isPat,
     mentions: mentions
 };
+if (extra) {
+    msg.extra = extra;
+}
     if (isVote && voteData) {
         msg.isVote = true;
         msg.voteId = voteData.id;
@@ -10966,6 +10972,29 @@ function maybeIncomingVideoCall(sessionId, friendId) {
     }
 }
 
+function maybeSendGameInvite(sessionId, friendId) {
+    var rand = Math.random() * 100;
+    var gameType, mode;
+    if (rand < 25) { gameType = 'goban'; mode = 'single'; }
+    else if (rand < 50) { gameType = 'goban'; mode = 'double'; }
+    else if (rand < 75) { gameType = 'monopoly'; mode = 'single'; }
+    else { gameType = 'monopoly'; mode = 'double'; }
+    var friend = appData.friends.find(function(f) { return f.id === friendId; });
+    if (!friend) return;
+    var gameNames = { 'goban': '五子棋', 'monopoly': '大富翁' };
+    var modeNames = { 'single': '单人模式', 'double': '双人模式' };
+    var inviteMsg = '邀请你玩 ' + gameNames[gameType] + '（' + modeNames[mode] + '），点击开始！';
+    sendMessage(sessionId, inviteMsg, false, {
+        id: friendId,
+        name: friend.name,
+        avatar: friend.avatar
+    }, false, false, null, null, false, null, {
+        isGameInvite: true,
+        gameType: gameType,
+        mode: mode
+    });
+}
+
 // ==================== 发送图片 ====================
 function sendImageFromCamera(sessionId) {
     let input = document.createElement("input");
@@ -11988,23 +12017,1057 @@ function showGameSystemModal(sessionId) {
     }
     
     // ===== 游戏卡片点击事件（使用事件委托） =====
-    var container = modal.querySelector('.modal-container');
-    if (container) {
-        container.addEventListener('click', function(e) {
-            var card = e.target.closest('.game-card');
-            if (!card) return;
-            var game = card.dataset.game;
-            if (!game) return;
-            
-            // 防止点击内部元素触发多次
-            e.stopPropagation();
-            
+var container = modal.querySelector('.modal-container');
+if (container) {
+    container.addEventListener('click', function(e) {
+        // 修复：使用 .game-card 而不是 .mode-card
+        var card = e.target.closest('.game-card');
+        if (!card) return;
+        var game = card.dataset.game;
+        if (!game) return;
+        var friendId = card.dataset.friendId;
+        
+        e.stopPropagation();
+        modal.remove();
+        
+        // 获取好友信息
+        var friend = appData.friends.find(function(f) { return f.id === friendId; });
+        if (!friend) {
+            alert('好友不存在');
+            return;
+        }
+        
+        // 延迟后显示游戏模式选择
+        setTimeout(function() {
+            showGameModeSelector(sessionId, friendId, friend, game);
+        }, 50);
+    });
+}
+}
+
+// ==================== 五子棋游戏核心 ====================
+
+// 五子棋常量
+const GOBAN_SIZE = 15;
+const EMPTY = 0;
+const BLACK = 1; // 黑棋
+const WHITE = 2; // 白棋
+const GRAY = 3;  // NPC 灰色
+
+// ==================== 先手选择 ====================
+function showFirstMoveChoice(sessionId, friendId, friend, game, mode) {
+    var modalHtml = `
+        <div class="modal-container" style="width: 90%; max-width: 360px; padding: 24px 20px; text-align: center; border-radius: 20px;">
+            <div style="font-size: 40px; margin-bottom: 8px;">棋子</div>
+            <div style="font-size: 17px; font-weight: 600; margin-bottom: 4px;">选择先手</div>
+            <div style="font-size: 13px; color: #8e8e93; margin-bottom: 16px;">你希望执黑先手还是执白后手？</div>
+            <div style="display: flex; gap: 12px;">
+                <button id="firstMoveYes" style="flex: 1; background: #1c1c1e; padding: 12px 0; font-size: 15px; border-radius: 16px; border: none; color: white; font-weight: 500; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+                    黑棋（先手）
+                </button>
+                <button id="firstMoveNo" style="flex: 1; background: #f0f0f0; padding: 12px 0; font-size: 15px; border-radius: 16px; border: 2px solid #ddd; color: #1c1c1e; font-weight: 500; cursor: pointer;">
+                    白棋（后手）
+                </button>
+            </div>
+            <div style="margin-top: 12px; font-size: 11px; color: #8e8e93;">好友颜色将自动与你取反</div>
+        </div>
+    `;
+    
+    var modal = showModal(modalHtml);
+    
+    var yesBtn = modal.querySelector('#firstMoveYes');
+    var noBtn = modal.querySelector('#firstMoveNo');
+    
+    if (yesBtn) {
+        yesBtn.onclick = function() {
             modal.remove();
-            // 延迟一下确保弹窗已关闭
-            setTimeout(function() {
-                showGameModeSelector(sessionId, friendId, friend, game);
-            }, 50);
+            sendGameInvite(sessionId, friendId, friend, game, mode, 'black');
+        };
+    }
+    
+    if (noBtn) {
+        noBtn.onclick = function() {
+            modal.remove();
+            sendGameInvite(sessionId, friendId, friend, game, mode, 'white');
+        };
+    }
+}
+
+// ==================== 五子棋 AI 核心算法 ====================
+
+// 检查是否五子连珠
+function checkWinGoban(board, row, col, player) {
+    var directions = [[1,0],[0,1],[1,1],[1,-1]];
+    for (var d = 0; d < directions.length; d++) {
+        var count = 1;
+        var dx = directions[d][0];
+        var dy = directions[d][1];
+        for (var dir = -1; dir <= 1; dir += 2) {
+            for (var step = 1; step < 5; step++) {
+                var nr = row + dx * step * dir;
+                var nc = col + dy * step * dir;
+                if (nr < 0 || nr >= GOBAN_SIZE || nc < 0 || nc >= GOBAN_SIZE) break;
+                if (board[nr][nc] !== player) break;
+                count++;
+            }
+        }
+        if (count >= 5) return true;
+    }
+    return false;
+}
+
+// 检查棋盘是否下满
+function isBoardFullGoban(board) {
+    for (var r = 0; r < GOBAN_SIZE; r++) {
+        for (var c = 0; c < GOBAN_SIZE; c++) {
+            if (board[r][c] === EMPTY) return false;
+        }
+    }
+    return true;
+}
+
+// 获取空位
+function getEmptyCellsGoban(board) {
+    var cells = [];
+    for (var r = 0; r < GOBAN_SIZE; r++) {
+        for (var c = 0; c < GOBAN_SIZE; c++) {
+            if (board[r][c] === EMPTY) cells.push({row: r, col: c});
+        }
+    }
+    return cells;
+}
+
+// 评估位置分数
+function evaluatePositionGoban(board, row, col, player) {
+    var score = 0;
+    var directions = [[1,0],[0,1],[1,1],[1,-1]];
+    for (var d = 0; d < directions.length; d++) {
+        var dx = directions[d][0];
+        var dy = directions[d][1];
+        var count = 1;
+        var openLeft = 0;
+        var openRight = 0;
+        for (var dir = -1; dir <= 1; dir += 2) {
+            for (var step = 1; step < 5; step++) {
+                var nr = row + dx * step * dir;
+                var nc = col + dy * step * dir;
+                if (nr < 0 || nr >= GOBAN_SIZE || nc < 0 || nc >= GOBAN_SIZE) break;
+                if (board[nr][nc] === player) count++;
+                else if (board[nr][nc] === EMPTY) {
+                    if (dir === -1) openLeft++;
+                    else openRight++;
+                    break;
+                } else break;
+            }
+        }
+        if (count >= 5) score += 100000;
+        else if (count === 4) {
+            if (openLeft > 0 && openRight > 0) score += 50000;
+            else if (openLeft > 0 || openRight > 0) score += 5000;
+        } else if (count === 3) {
+            if (openLeft > 0 && openRight > 0) score += 1000;
+            else if (openLeft > 0 || openRight > 0) score += 100;
+        } else if (count === 2) {
+            if (openLeft > 0 && openRight > 0) score += 10;
+            else if (openLeft > 0 || openRight > 0) score += 5;
+        }
+    }
+    return score;
+}
+
+// 单人模式 AI（好友作为对手）
+function getBestMoveGoban(board, player, opponent) {
+    var emptyCells = getEmptyCellsGoban(board);
+    if (emptyCells.length === 0) return null;
+    
+    var bestScore = -1;
+    var bestMove = emptyCells[0];
+    
+    for (var i = 0; i < emptyCells.length; i++) {
+        var cell = emptyCells[i];
+        var r = cell.row;
+        var c = cell.col;
+        
+        // 1. 检测自己能否赢
+        board[r][c] = player;
+        if (checkWinGoban(board, r, c, player)) {
+            board[r][c] = EMPTY;
+            return {row: r, col: c};
+        }
+        board[r][c] = EMPTY;
+        
+        // 2. 检测对手能否赢（拦截）
+        board[r][c] = opponent;
+        if (checkWinGoban(board, r, c, opponent)) {
+            board[r][c] = EMPTY;
+            return {row: r, col: c};
+        }
+        board[r][c] = EMPTY;
+        
+        // 3. 综合评分
+        var score = 0;
+        board[r][c] = player;
+        score += evaluatePositionGoban(board, r, c, player);
+        board[r][c] = EMPTY;
+        board[r][c] = opponent;
+        score += evaluatePositionGoban(board, r, c, opponent) * 0.9;
+        board[r][c] = EMPTY;
+        
+        // 中心偏好
+        var center = Math.floor(GOBAN_SIZE / 2);
+        var dist = Math.abs(r - center) + Math.abs(c - center);
+        score += (GOBAN_SIZE - dist) * 2;
+        
+        if (score > bestScore) {
+            bestScore = score;
+            bestMove = {row: r, col: c};
+        }
+    }
+    return bestMove;
+}
+
+// 双人模式：队友AI（好友协助你）
+function getTeammateMoveGoban(board, teammateColor, opponentColor, myColor) {
+    var emptyCells = getEmptyCellsGoban(board);
+    if (emptyCells.length === 0) return null;
+    
+    // 1. 检测队友能否赢
+    for (var i = 0; i < emptyCells.length; i++) {
+        var cell = emptyCells[i];
+        board[cell.row][cell.col] = teammateColor;
+        if (checkWinGoban(board, cell.row, cell.col, teammateColor)) {
+            board[cell.row][cell.col] = EMPTY;
+            return cell;
+        }
+        board[cell.row][cell.col] = EMPTY;
+    }
+    
+    // 2. 检测对手（NPC）能否赢 -> 拦截
+    for (var i = 0; i < emptyCells.length; i++) {
+        var cell = emptyCells[i];
+        board[cell.row][cell.col] = opponentColor;
+        if (checkWinGoban(board, cell.row, cell.col, opponentColor)) {
+            board[cell.row][cell.col] = EMPTY;
+            return cell;
+        }
+        board[cell.row][cell.col] = EMPTY;
+    }
+    
+    // 3. 选择评分最高且不破坏你布局的位置
+    var bestScore = -1;
+    var bestMove = emptyCells[0];
+    for (var i = 0; i < emptyCells.length; i++) {
+        var cell = emptyCells[i];
+        var r = cell.row;
+        var c = cell.col;
+        var score = 0;
+        
+        board[r][c] = teammateColor;
+        score += evaluatePositionGoban(board, r, c, teammateColor) * 0.6;
+        board[r][c] = EMPTY;
+        
+        board[r][c] = opponentColor;
+        score += evaluatePositionGoban(board, r, c, opponentColor) * 0.8;
+        board[r][c] = EMPTY;
+        
+        board[r][c] = myColor;
+        var myScore = evaluatePositionGoban(board, r, c, myColor);
+        board[r][c] = EMPTY;
+        if (myScore > 100) score -= 50;
+        
+        var center = Math.floor(GOBAN_SIZE / 2);
+        var dist = Math.abs(r - center) + Math.abs(c - center);
+        score += (GOBAN_SIZE - dist) * 2;
+        
+        if (score > bestScore) {
+            bestScore = score;
+            bestMove = cell;
+        }
+    }
+    return bestMove;
+}
+
+// 双人模式：NPC AI（攻击你和好友）
+function getNPCMoveGoban(board, npcColor, playerColors) {
+    var emptyCells = getEmptyCellsGoban(board);
+    if (emptyCells.length === 0) return null;
+    
+    var opponentColors = playerColors;
+    
+    // 1. 检测NPC能否赢
+    for (var i = 0; i < emptyCells.length; i++) {
+        var cell = emptyCells[i];
+        board[cell.row][cell.col] = npcColor;
+        if (checkWinGoban(board, cell.row, cell.col, npcColor)) {
+            board[cell.row][cell.col] = EMPTY;
+            return cell;
+        }
+        board[cell.row][cell.col] = EMPTY;
+    }
+    
+    // 2. 检测对手（你和好友）谁能赢 -> 拦截威胁最大的
+    var bestOpponentScore = -1;
+    var bestBlockMove = null;
+    for (var oi = 0; oi < opponentColors.length; oi++) {
+        var opp = opponentColors[oi];
+        for (var i = 0; i < emptyCells.length; i++) {
+            var cell = emptyCells[i];
+            board[cell.row][cell.col] = opp;
+            if (checkWinGoban(board, cell.row, cell.col, opp)) {
+                board[cell.row][cell.col] = EMPTY;
+                return cell;
+            }
+            var score = evaluatePositionGoban(board, cell.row, cell.col, opp);
+            board[cell.row][cell.col] = EMPTY;
+            if (score > bestOpponentScore) {
+                bestOpponentScore = score;
+                bestBlockMove = {row: cell.row, col: cell.col};
+            }
+        }
+    }
+    if (bestBlockMove) return bestBlockMove;
+    
+    // 3. 综合评分
+    var bestScore = -1;
+    var bestMove = emptyCells[0];
+    for (var i = 0; i < emptyCells.length; i++) {
+        var cell = emptyCells[i];
+        var score = 0;
+        
+        board[cell.row][cell.col] = npcColor;
+        score += evaluatePositionGoban(board, cell.row, cell.col, npcColor) * 1.2;
+        board[cell.row][cell.col] = EMPTY;
+        
+        for (var oi = 0; oi < opponentColors.length; oi++) {
+            board[cell.row][cell.col] = opponentColors[oi];
+            score += evaluatePositionGoban(board, cell.row, cell.col, opponentColors[oi]) * 0.7;
+            board[cell.row][cell.col] = EMPTY;
+        }
+        
+        var center = Math.floor(GOBAN_SIZE / 2);
+        var dist = Math.abs(cell.row - center) + Math.abs(cell.col - center);
+        score += (GOBAN_SIZE - dist) * 2;
+        
+        if (score > bestScore) {
+            bestScore = score;
+            bestMove = cell;
+        }
+    }
+    return bestMove;
+}
+
+// ==================== 启动五子棋游戏 ====================
+function startGobanGame(sessionId, friendId, friend, mode, myColor, gameWin) {
+    // ===== 新增：初始化定时器数组 =====
+    if (!window._gobanTimers) {
+        window._gobanTimers = [];
+    }
+    if (!gameWin._gobanTimers) {
+        gameWin._gobanTimers = [];
+    }
+    
+    // 确定颜色分配
+    var myStone = (myColor === 'black') ? BLACK : WHITE;
+    
+    // ✅ 单人模式：好友是对手，颜色相反
+    // ✅ 双人模式：好友是队友，颜色相同
+    var friendStone;
+    if (mode === 'single') {
+        friendStone = (myColor === 'black') ? WHITE : BLACK;
+    } else {
+        friendStone = myStone;
+    }
+    
+    var npcStone = (myColor === 'black') ? WHITE : BLACK;
+    var playerColors = [myStone, friendStone];
+    
+    // 创建棋盘
+    var board = [];
+    for (var r = 0; r < GOBAN_SIZE; r++) {
+        board[r] = [];
+        for (var c = 0; c < GOBAN_SIZE; c++) {
+            board[r][c] = EMPTY;
+        }
+    }
+    
+    var gameOver = false;
+    var winner = null;
+    var currentTurn = (myColor === 'black') ? 'my' : 'friend';
+    var moveHistory = [];
+    
+    // ============================================================
+    // ✅ 修复：不再自己创建窗口，直接使用传入的 gameWin
+    // ============================================================
+    // 清空 gameWin 原有内容
+    gameWin.innerHTML = '';
+    // 确保 gameWin 样式正确
+    gameWin.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: #f0ece4;
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        max-width: 100%;
+        margin: 0;
+    `;
+    gameWin.setAttribute('data-game-session', sessionId);
+    
+    var space = getCoupleSpace(friendId);
+    var displayName = space && space.enabled && space.nickname ? space.nickname : friend.name;
+    
+    // 头部
+    var headerHtml = `
+        <div style="padding: 6px 14px; border-bottom: 0.5px solid #d0c8b8; display: flex; align-items: center; background: #f5f0e8; flex-shrink: 0;">
+            <span id="exitGobanBtn" style="font-size: 20px; cursor: pointer; margin-right: 10px; color: #8b7a6a;">返回</span>
+            <span style="font-weight: 600; font-size: 14px; flex: 1;">五子棋</span>
+            <span style="font-size: 10px; color: #8b7a6a;">${mode === 'single' ? '单人模式' : '双人模式'}</span>
+        </div>
+    `;
+    
+    // 棋盘区域 (75%)
+    var boardHtml = `
+        <div id="gobanBoardContainer" style="flex: 75; display: flex; align-items: center; justify-content: center; padding: 8px; overflow: hidden; min-height: 0; background: #f0ece4;">
+            <canvas id="gobanCanvas" style="width: 100%; height: 100%; max-width: 600px; max-height: 600px; aspect-ratio: 1/1; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.15); cursor: pointer; background: #dcb88a;"></canvas>
+        </div>
+    `;
+    
+    // 状态栏
+    var statusBarHtml = `
+        <div id="gobanStatusBar" style="flex: 0 0 36px; display: flex; align-items: center; justify-content: center; background: #e8e0d8; border-top: 0.5px solid #d0c8b8; border-bottom: 0.5px solid #d0c8b8; font-size: 13px; font-weight: 500; color: #4a3a2a; min-height: 36px; padding: 0 14px; text-align: center;">
+            <span id="gobanStatusText">游戏准备中...</span>
+        </div>
+    `;
+    
+    // 聊天区域 (25%)
+    var chatHtml = `
+        <div style="flex: 25; display: flex; flex-direction: column; background: #f5f0e8; min-height: 60px;">
+            <div id="gobanChatMessages" style="flex: 1; overflow-y: auto; padding: 4px 10px; font-size: 12px; color: #1c1c1e; background: #faf8f5; line-height: 1.6; max-height: 100%;">
+                <div style="color: #8b7a6a; font-size: 11px;">🎮 和 ${escapeHtml(displayName)} 一起下棋吧！</div>
+            </div>
+            <div style="display: flex; gap: 6px; padding: 4px 8px; border-top: 0.5px solid #d0c8b8; flex-shrink: 0; background: #f5f0e8;">
+                <input type="text" id="gobanChatInput" placeholder="说点什么..." style="flex: 1; padding: 4px 10px; border-radius: 16px; border: 0.5px solid #ccc; outline: none; font-size: 12px; background: #fff;">
+                <button id="gobanChatSendBtn" style="background: #8b7a6a; color: white; border: none; border-radius: 16px; padding: 0 12px; height: 26px; font-weight: 500; cursor: pointer; font-size: 12px;">发送</button>
+            </div>
+        </div>
+    `;
+    
+    gameWin.innerHTML = headerHtml + boardHtml + statusBarHtml + chatHtml;
+    
+    var canvas = gameWin.querySelector('#gobanCanvas');
+    var ctx = canvas.getContext('2d');
+    var cellSize = 0;
+    var padding = 0;
+    var statusText = gameWin.querySelector('#gobanStatusText');
+    var chatMessages = gameWin.querySelector('#gobanChatMessages');
+    
+    // ===== 更新状态栏 =====
+    function updateStatusBar(msg, color) {
+        if (!statusText) return;
+        statusText.textContent = msg;
+        statusText.style.color = color || '#4a3a2a';
+    }
+    
+    // ===== 更新回合指示 =====
+    function updateTurnIndicator() {
+        if (gameOver) {
+            if (winner === 'my') {
+                updateStatusBar('你赢了！', '#07c160');
+                showGameResultModal('win');
+            } else if (winner === 'friend') {
+                updateStatusBar(displayName + ' 赢了！', '#ff9500');
+                showGameResultModal('lose');
+            } else if (winner === 'npc') {
+                updateStatusBar('NPC 赢了！', '#ff3b30');
+                showGameResultModal('lose');
+            } else if (winner === 'draw') {
+                updateStatusBar('平局！', '#8e8e93');
+                showGameResultModal('draw');
+            }
+            return;
+        }
+        
+        var name = '';
+        if (currentTurn === 'my') name = '你';
+        else if (currentTurn === 'friend') name = displayName;
+        else if (currentTurn === 'npc1') name = 'NPC1';
+        else if (currentTurn === 'npc2') name = 'NPC2';
+        
+        var colorText = '';
+        var turnPlayer = null;
+        if (currentTurn === 'my') turnPlayer = myStone;
+        else if (currentTurn === 'friend') turnPlayer = friendStone;
+        else turnPlayer = npcStone;
+        
+        if (turnPlayer === BLACK) colorText = '黑棋';
+        else if (turnPlayer === WHITE) colorText = '白棋';
+        else colorText = '灰棋';
+        
+        updateStatusBar(name + ' 的回合 (' + colorText + ')', '#4a3a2a');
+    }
+    
+    // ===== 添加聊天消息 =====
+    function addGobanChatMessage(msg) {
+        if (!chatMessages) return;
+        var time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        chatMessages.innerHTML += `<div style="font-size:12px;padding:1px 0;">[${time}] ${msg}</div>`;
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+    
+    // ===== 显示游戏结果弹窗 =====
+    function showGameResultModal(result) {
+        var isWin = (result === 'win');
+        var isDraw = (result === 'draw');
+        var title = isWin ? '你赢了！' : (isDraw ? '平局！' : '你输了');
+        var color = isWin ? '#07c160' : (isDraw ? '#ff9500' : '#ff3b30');
+        var subText = isWin ? '太厉害了！' : (isDraw ? '势均力敌！' : '下次加油！');
+        var stepsText = '共 ' + moveHistory.length + ' 步';
+        
+        var modalHtml = `
+            <div class="modal-container" style="width: 90%; max-width: 350px; padding: 24px 20px 20px 20px; text-align: center; border-radius: 20px; background: var(--app-bg-color);">
+                <div style="font-size: 28px; font-weight: 700; color: ${color}; margin-bottom: 4px;">${title}</div>
+                <div style="font-size: 14px; color: #8e8e93; margin-bottom: 4px;">${subText}</div>
+                <div style="font-size: 13px; color: #8e8e93; margin-bottom: 16px;">${mode === 'single' ? '单人模式' : '双人模式'} · ${stepsText}</div>
+                <div style="display: flex; gap: 10px;">
+                    <button id="resultReplayBtn" style="flex: 1; background: #07c160; padding: 10px; font-size: 14px; border-radius: 20px; border: none; color: white; cursor: pointer;">再来一局</button>
+                    <button id="resultCloseBtn" style="flex: 1; background: #888; padding: 10px; font-size: 14px; border-radius: 20px; border: none; color: white; cursor: pointer;">关闭</button>
+                </div>
+            </div>
+        `;
+        
+        var modal = showModal(modalHtml);
+        
+        var replayBtn = modal.querySelector('#resultReplayBtn');
+        if (replayBtn) {
+            replayBtn.onclick = function() {
+                modal.remove();
+                // ===== 清理定时器 =====
+                clearAllGobanTimers();
+                if (gameWin && gameWin.parentElement) {
+                    gameWin.remove();
+                }
+                window._currentGameWindow = null;
+                setTimeout(function() {
+                    showGameModeSelector(sessionId, friendId, friend, 'goban');
+                }, 50);
+            };
+        }
+        
+        var closeBtn = modal.querySelector('#resultCloseBtn');
+        if (closeBtn) {
+            closeBtn.onclick = function() {
+                modal.remove();
+                // ===== 清理定时器 =====
+                clearAllGobanTimers();
+                if (gameWin && gameWin.parentElement) {
+                    gameWin.remove();
+                }
+                window._currentGameWindow = null;
+                setTimeout(function() {
+                    showGameModeSelector(sessionId, friendId, friend, 'goban');
+                }, 50);
+            };
+        }
+    }
+    
+    // ===== 调整canvas尺寸 =====
+    function resizeCanvas() {
+        var rect = canvas.getBoundingClientRect();
+        var size = Math.min(rect.width, rect.height);
+        canvas.width = size;
+        canvas.height = size;
+        cellSize = (size - 40) / (GOBAN_SIZE - 1);
+        padding = (size - cellSize * (GOBAN_SIZE - 1)) / 2;
+        drawBoard();
+    }
+    
+    // ===== 绘制棋盘 =====
+    function drawBoard() {
+        var w = canvas.width;
+        var h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        
+        var grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, w/2);
+        grad.addColorStop(0, '#dcb88a');
+        grad.addColorStop(1, '#c4a070');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+        
+        ctx.strokeStyle = '#8a7a6a';
+        ctx.lineWidth = 1;
+        for (var i = 0; i < GOBAN_SIZE; i++) {
+            var x = padding + i * cellSize;
+            var y = padding + i * cellSize;
+            ctx.beginPath();
+            ctx.moveTo(padding, y);
+            ctx.lineTo(padding + (GOBAN_SIZE - 1) * cellSize, y);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(x, padding);
+            ctx.lineTo(x, padding + (GOBAN_SIZE - 1) * cellSize);
+            ctx.stroke();
+        }
+        
+        var stars = [[3,3], [3,7], [3,11], [7,3], [7,7], [7,11], [11,3], [11,7], [11,11]];
+        ctx.fillStyle = '#8a7a6a';
+        for (var i = 0; i < stars.length; i++) {
+            var sx = padding + stars[i][0] * cellSize;
+            var sy = padding + stars[i][1] * cellSize;
+            ctx.beginPath();
+            ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        
+        for (var r = 0; r < GOBAN_SIZE; r++) {
+            for (var c = 0; c < GOBAN_SIZE; c++) {
+                if (board[r][c] !== EMPTY) {
+                    drawStone(ctx, r, c, board[r][c]);
+                }
+            }
+        }
+        
+        if (moveHistory.length > 0) {
+            var last = moveHistory[moveHistory.length - 1];
+            var lx = padding + last.col * cellSize;
+            var ly = padding + last.row * cellSize;
+            ctx.fillStyle = '#ff3b30';
+            ctx.beginPath();
+            ctx.arc(lx, ly, 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+    
+    // ===== 绘制棋子 =====
+    function drawStone(ctx, row, col, player) {
+        var x = padding + col * cellSize;
+        var y = padding + row * cellSize;
+        var radius = cellSize * 0.45;
+        
+        var grad = ctx.createRadialGradient(x - radius*0.3, y - radius*0.3, radius*0.1, x, y, radius);
+        if (player === BLACK) {
+            grad.addColorStop(0, '#555');
+            grad.addColorStop(1, '#1a1a1a');
+        } else if (player === WHITE) {
+            grad.addColorStop(0, '#ffffff');
+            grad.addColorStop(1, '#d0d0d0');
+        } else {
+            grad.addColorStop(0, '#d0d0d0');
+            grad.addColorStop(1, '#8a8a8a');
+        }
+        
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.strokeStyle = player === WHITE ? '#ccc' : '#000';
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.arc(x - radius*0.2, y - radius*0.2, radius*0.15, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.fill();
+    }
+    
+    // ===== 检查胜利 =====
+    function checkWin(row, col, player) {
+        return checkWinGoban(board, row, col, player);
+    }
+    
+    // ===== 检查平局 =====
+    function checkDraw() {
+        return isBoardFullGoban(board);
+    }
+    
+    // ===== 落子 =====
+    function placeStone(row, col, player) {
+        if (gameOver) return false;
+        if (row < 0 || row >= GOBAN_SIZE || col < 0 || col >= GOBAN_SIZE) return false;
+        if (board[row][col] !== EMPTY) return false;
+        
+        var expectedPlayer = null;
+        if (currentTurn === 'my') expectedPlayer = myStone;
+        else if (currentTurn === 'friend') expectedPlayer = friendStone;
+        else expectedPlayer = npcStone;
+        
+        if (player !== expectedPlayer) return false;
+        
+        board[row][col] = player;
+        moveHistory.push({row: row, col: col, player: player});
+        drawBoard();
+        
+        var playerName = '';
+        if (player === myStone) playerName = '你';
+        else if (player === friendStone) playerName = displayName;
+        else playerName = 'NPC' + (currentTurn === 'npc1' ? '1' : '2');
+        updateStatusBar(playerName + ' 下了一步', '#4a3a2a');
+        
+        if (checkWin(row, col, player)) {
+            gameOver = true;
+            if (player === myStone) winner = 'my';
+            else if (player === friendStone) winner = 'friend';
+            else winner = 'npc';
+            updateTurnIndicator();
+            saveGobanHistory(friendId, mode, winner === 'my' || winner === 'friend');
+            return true;
+        }
+        
+        if (checkDraw()) {
+            gameOver = true;
+            winner = 'draw';
+            updateTurnIndicator();
+            saveGobanHistory(friendId, mode, false);
+            return true;
+        }
+        
+        nextTurn();
+        return true;
+    }
+    
+    // ===== 切换回合 =====
+    function nextTurn() {
+        if (gameOver) return;
+        
+        if (mode === 'single') {
+            if (currentTurn === 'my') {
+    currentTurn = 'friend';
+    var timer1 = setTimeout(function() {
+        if (!gameOver && currentTurn === 'friend') {
+            doFriendAIMove();
+        }
+    }, 500);
+    window._gobanTimers.push(timer1);
+    gameWin._gobanTimers.push(timer1);
+} else {
+                currentTurn = 'my';
+                updateTurnIndicator();
+            }
+        } else {
+            var order = ['my', 'friend', 'npc1', 'npc2'];
+            var idx = order.indexOf(currentTurn);
+            var nextIdx = (idx + 1) % order.length;
+            currentTurn = order[nextIdx];
+            updateTurnIndicator();
+            
+            if (currentTurn === 'friend') {
+    var timer2 = setTimeout(function() {
+        if (!gameOver && currentTurn === 'friend') {
+            doTeammateAIMove();
+        }
+    }, 500);
+    window._gobanTimers.push(timer2);
+    gameWin._gobanTimers.push(timer2);
+} else if (currentTurn === 'npc1' || currentTurn === 'npc2') {
+    var timer3 = setTimeout(function() {
+        if (!gameOver && (currentTurn === 'npc1' || currentTurn === 'npc2')) {
+            doNPCAIMove(currentTurn === 'npc1' ? 1 : 2);
+        }
+    }, 500);
+    window._gobanTimers.push(timer3);
+    gameWin._gobanTimers.push(timer3);
+}
+        }
+    }
+    
+    // ===== 好友AI（单人模式） =====
+    function doFriendAIMove() {
+        if (gameOver) return;
+        if (currentTurn !== 'friend') return;
+        
+        if (friend && !gameOver) {
+            var comment = generateGameChatReply(friendId);
+            if (comment && comment.trim()) {
+                var space = getCoupleSpace(friendId);
+                var displayName = space && space.enabled && space.nickname ? space.nickname : friend.name;
+                var chatMessages = gameWin.querySelector('#gobanChatMessages');
+                if (chatMessages) {
+                    var time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    chatMessages.innerHTML += `<div style="font-size:12px;padding:2px 0;">[${time}] ${escapeHtml(displayName)}：${escapeHtml(comment)}</div>`;
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                }
+            }
+        }
+        
+        var move = getBestMoveGoban(board, friendStone, myStone);
+        if (move) {
+            var timer4 = setTimeout(function() {
+                if (gameOver || currentTurn !== 'friend') return;
+                placeStone(move.row, move.col, friendStone);
+            }, 500);
+            window._gobanTimers.push(timer4);
+        } else {
+            if (isBoardFullGoban(board)) {
+                gameOver = true;
+                winner = 'draw';
+                updateTurnIndicator();
+                saveGobanHistory(friendId, mode, false);
+            }
+        }
+    }
+    
+    // ===== 队友AI（双人模式） =====
+    function doTeammateAIMove() {
+        if (gameOver) return;
+        if (currentTurn !== 'friend') return;
+        
+        if (friend && !gameOver) {
+            var comment = generateGameChatReply(friendId);
+            if (comment && comment.trim()) {
+                var space = getCoupleSpace(friendId);
+                var displayName = space && space.enabled && space.nickname ? space.nickname : friend.name;
+                var chatMessages = gameWin.querySelector('#gobanChatMessages');
+                if (chatMessages) {
+                    var time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    chatMessages.innerHTML += `<div style="font-size:12px;padding:2px 0;">[${time}] ${escapeHtml(displayName)}：${escapeHtml(comment)}</div>`;
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                }
+            }
+        }
+        
+        var move = getTeammateMoveGoban(board, myStone, npcStone, myStone);
+        if (move) {
+            var timer5 = setTimeout(function() {
+                if (gameOver || currentTurn !== 'friend') return;
+                placeStone(move.row, move.col, myStone);
+            }, 500);
+            window._gobanTimers.push(timer5);
+        } else {
+            if (isBoardFullGoban(board)) {
+                gameOver = true;
+                winner = 'draw';
+                updateTurnIndicator();
+                saveGobanHistory(friendId, mode, false);
+            }
+        }
+    }
+    
+    // ===== NPC AI（双人模式） =====
+    function doNPCAIMove(npcIndex) {
+        if (gameOver) return;
+        if (currentTurn !== ('npc' + npcIndex)) return;
+        
+        var move = getNPCMoveGoban(board, npcStone, playerColors);
+        if (move) {
+            var timer6 = setTimeout(function() {
+                if (gameOver || currentTurn !== ('npc' + npcIndex)) return;
+                placeStone(move.row, move.col, npcStone);
+            }, 500);
+            window._gobanTimers.push(timer6);
+        } else {
+            if (isBoardFullGoban(board)) {
+                gameOver = true;
+                winner = 'draw';
+                updateTurnIndicator();
+                saveGobanHistory(friendId, mode, false);
+            }
+        }
+    }
+    
+    // ===== 保存战绩 =====
+    function saveGobanHistory(friendId, mode, isWin) {
+        if (!appData.gameHistory) {
+            appData.gameHistory = {};
+        }
+        if (!appData.gameHistory[friendId]) {
+            appData.gameHistory[friendId] = { single: [], double: [] };
+        }
+        
+        var friend = appData.friends.find(function(f) { return f.id === friendId; });
+        var displayName = friend ? friend.name : '对方';
+        var space = getCoupleSpace(friendId);
+        if (space && space.enabled && space.nickname) {
+            displayName = space.nickname;
+        }
+        
+        var winnerDesc = '';
+        if (isWin) {
+            winnerDesc = '你';
+        } else if (typeof winner !== 'undefined' && winner === 'friend') {
+            winnerDesc = displayName;
+        } else if (typeof winner !== 'undefined' && winner === 'npc') {
+            winnerDesc = 'NPC';
+        } else {
+            winnerDesc = '平局';
+        }
+        
+        var steps = 0;
+        if (typeof moveHistory !== 'undefined') {
+            steps = moveHistory.length;
+        }
+        
+        var record = {
+            gameName: '五子棋',
+            mode: mode === 'single' ? '单人模式' : '双人模式',
+            result: isWin ? 'win' : (typeof winner !== 'undefined' && winner === 'draw' ? 'draw' : 'loss'),
+            winner: winnerDesc,
+            round: steps,
+            time: Date.now()
+        };
+        
+        if (mode === 'single') {
+            appData.gameHistory[friendId].single.push(record);
+        } else {
+            appData.gameHistory[friendId].double.push(record);
+        }
+        
+        saveData();
+        console.log('✅ 五子棋战绩已保存:', record);
+    }
+    
+    // ===== 清理所有定时器 =====
+    function clearAllGobanTimers() {
+        if (window._gobanTimers) {
+            for (var i = 0; i < window._gobanTimers.length; i++) {
+                clearTimeout(window._gobanTimers[i]);
+            }
+            window._gobanTimers = [];
+        }
+    }
+    
+    // ===== 点击棋盘落子 =====
+    function handleCanvasClick(e) {
+        if (gameOver) return;
+        if (currentTurn !== 'my') {
+            updateStatusBar('还没轮到你', '#ff9500');
+            return;
+        }
+        
+        var rect = canvas.getBoundingClientRect();
+        var scaleX = canvas.width / rect.width;
+        var scaleY = canvas.height / rect.height;
+        
+        var x = (e.clientX - rect.left) * scaleX;
+        var y = (e.clientY - rect.top) * scaleY;
+        
+        var col = Math.round((x - padding) / cellSize);
+        var row = Math.round((y - padding) / cellSize);
+        
+        if (row < 0 || row >= GOBAN_SIZE || col < 0 || col >= GOBAN_SIZE) return;
+        if (board[row][col] !== EMPTY) return;
+        
+        placeStone(row, col, myStone);
+    }
+    
+    canvas.addEventListener('click', handleCanvasClick);
+    
+    // ===== 退出按钮（修复版） =====
+    var exitBtn = gameWin.querySelector('#exitGobanBtn');
+    if (exitBtn) {
+        exitBtn.onclick = function() {
+            if (!gameOver) {
+                if (!confirm('确定要退出游戏吗？当前进度将丢失！')) {
+                    return;
+                }
+            }
+            // ===== 标记游戏结束，防止后续AI操作 =====
+            gameOver = true;
+            
+            // ===== 清理所有定时器 =====
+            clearAllGobanTimers();
+            
+            // ===== 移除游戏窗口 =====
+            if (window._currentGameWindow) {
+                window._currentGameWindow = null;
+            }
+            if (gameWin && gameWin.parentElement) {
+                gameWin.remove();
+            }
+            
+            // ===== 刷新消息列表 =====
+            renderMessagesPage();
+        };
+    }
+    
+    // ===== 聊天功能 =====
+    var chatInput = gameWin.querySelector('#gobanChatInput');
+    var chatSendBtn = gameWin.querySelector('#gobanChatSendBtn');
+    
+    function sendGobanChat() {
+        var text = chatInput.value.trim();
+        if (!text) return;
+        addGobanChatMessage('我：' + escapeHtml(text));
+        chatInput.value = '';
+        
+        if (Math.random() < 0.3 && !gameOver && friend) {
+            var timer7 = setTimeout(function() {
+                var replies = ['好的！', '加油！', '继续！', '嗯嗯', '收到', '哈哈', '好厉害！', '我也要努力了！'];
+                var reply = replies[Math.floor(Math.random() * replies.length)];
+                addGobanChatMessage(displayName + '：' + reply);
+            }, 1000 + Math.random() * 2000);
+            window._gobanTimers.push(timer7);
+        }
+    }
+    
+    if (chatSendBtn) chatSendBtn.onclick = sendGobanChat;
+    if (chatInput) {
+        chatInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') sendGobanChat();
         });
+    }
+    
+    // ===== 窗口resize =====
+    var resizeObserver = new ResizeObserver(function() {
+        resizeCanvas();
+    });
+    resizeObserver.observe(canvas);
+    
+    // ===== 初始化 =====
+    resizeCanvas();
+    
+    var startMsg = '游戏开始！' + (myColor === 'black' ? '你执黑先手' : '你执白后手');
+    updateStatusBar(startMsg, '#4a3a2a');
+    
+    addGobanChatMessage('和 ' + displayName + ' 一起下棋吧！');
+    
+    if (myColor === 'black') {
+        var timer8 = setTimeout(function() {
+            updateTurnIndicator();
+        }, 500);
+        window._gobanTimers.push(timer8);
+    } else {
+        updateStatusBar(displayName + ' 先手，请等待...', '#4a3a2a');
+        var timer9 = setTimeout(function() {
+            if (!gameOver && currentTurn === 'friend') {
+                if (mode === 'single') {
+                    doFriendAIMove();
+                } else {
+                    doTeammateAIMove();
+                }
+            }
+        }, 500 + Math.random() * 500);
+        window._gobanTimers.push(timer9);
+    }
+    
+    // ✅ 修复：更新全局引用
+    window._currentGameWindow = gameWin;
+}
+
+function clearAllGobanTimers() {
+    // 清理 window 上保存的定时器
+    if (window._gobanTimers) {
+        for (var i = 0; i < window._gobanTimers.length; i++) {
+            clearTimeout(window._gobanTimers[i]);
+        }
+        window._gobanTimers = [];
+    }
+    
+    // 清理游戏窗口上保存的定时器
+    if (window._currentGameWindow) {
+        var gameWin = window._currentGameWindow;
+        if (gameWin._gobanTimers) {
+            for (var i = 0; i < gameWin._gobanTimers.length; i++) {
+                clearTimeout(gameWin._gobanTimers[i]);
+            }
+            gameWin._gobanTimers = [];
+        }
+        // 断开观察器
+        if (gameWin._observer) {
+            gameWin._observer.disconnect();
+            gameWin._observer = null;
+        }
     }
 }
 
@@ -12076,13 +13139,14 @@ function showGameModeSelector(sessionId, friendId, friend, game) {
     var modal = showModal(modalHtml);
     
     // 返回按钮
-    var backBtn = modal.querySelector('#backToGameMenu');
-    if (backBtn) {
-        backBtn.onclick = function() {
-            modal.remove();
-            showGameSystemModal(sessionId);
-        };
-    }
+var backBtn = modal.querySelector('#backToGameMenu');
+if (backBtn) {
+    backBtn.onclick = function() {
+        modal.remove();
+        // 修复：重新打开游戏系统时传递正确的会话ID
+        showGameSystemModal(sessionId);
+    };
+}
     
     // ===== 模式卡片点击事件（使用事件委托） =====
     var container = modal.querySelector('.modal-container');
@@ -12108,7 +13172,7 @@ function showGameModeSelector(sessionId, friendId, friend, game) {
 }
 
 // ==================== 发送游戏邀请 ====================
-function sendGameInvite(sessionId, friendId, friend, game, mode) {
+function sendGameInvite(sessionId, friendId, friend, game, mode, myColor) {
     let gameNames = {
         'goban': '五子棋',
         'monopoly': '大富翁'
@@ -12116,15 +13180,12 @@ function sendGameInvite(sessionId, friendId, friend, game, mode) {
     let gameName = gameNames[game] || game;
     let modeName = mode === 'single' ? '单人模式' : '双人模式';
     
-    // 获取显示名称（优先专属昵称）
     let space = getCoupleSpace(friendId);
     let displayName = space && space.enabled && space.nickname ? space.nickname : friend.name;
     
-    // 发送邀请消息
     let inviteMsg = `邀请${displayName}玩 ${gameName}（${modeName}）`;
     sendMessage(sessionId, inviteMsg, true, null, false);
     
-    // 显示等待弹窗
     let modalHtml = `
         <div class="modal-container" style="width: 92%; max-width: 350px; padding: 20px; text-align: center; border-radius: 16px;">
             <div style="font-size: 17px; font-weight: 600; margin-bottom: 4px;">等待对方回应...</div>
@@ -12144,7 +13205,6 @@ function sendGameInvite(sessionId, friendId, friend, game, mode) {
         };
     }
     
-    // AI 2-4秒后决定
     let delayMs = Math.floor(Math.random() * 2000) + 2000;
     let timer = setTimeout(() => {
         modal.remove();
@@ -12159,7 +13219,10 @@ function sendGameInvite(sessionId, friendId, friend, game, mode) {
                 avatar: friend.avatar
             }, false);
             
-            startGame(sessionId, friendId, friend, game, mode);
+            // ★★★★★ 加一个短延迟，让消息先发送再启动游戏 ★★★★★
+            setTimeout(function() {
+                startGame(sessionId, friendId, friend, game, mode, myColor);
+            }, 300);
         } else {
             let rejectMessages = [
                 '现在有点忙，下次吧！',
@@ -12728,24 +13791,54 @@ function addGameMessage(gameState, message) {
 
 // 保存战绩
 function saveGameHistory(friendId, gameState, winner) {
-    if (!appData.gameHistory) appData.gameHistory = {};
-    if (!appData.gameHistory[friendId]) appData.gameHistory[friendId] = { single: [], double: [] };
+    // 确保 gameHistory 存在
+    if (!appData.gameHistory) {
+        appData.gameHistory = {};
+    }
+    if (!appData.gameHistory[friendId]) {
+        appData.gameHistory[friendId] = { single: [], double: [] };
+    }
     
-    const mode = gameState.mode;
-    const players = gameState.players.map(p => ({
-        name: p.displayName,
-        money: p.money,
-        properties: p.properties.length,
-        isAlive: p.isAlive
-    }));
+    var mode = gameState.mode;
+    var players = gameState.players.map(function(p) {
+        return {
+            name: p.displayName,
+            money: p.money,
+            properties: p.properties ? p.properties.length : 0,
+            isAlive: p.isAlive
+        };
+    });
     
-    const record = {
+    var isWin = false;
+    var winnerDesc = '平局';
+    
+    if (mode === 'single') {
+        if (winner && winner.id === 'self') {
+            isWin = true;
+            winnerDesc = '你';
+        } else if (winner && winner.id === gameState.friendId) {
+            winnerDesc = winner.displayName || '对方';
+        } else {
+            winnerDesc = '平局';
+        }
+    } else {
+        if (winner && winner.team === 'player') {
+            isWin = true;
+            winnerDesc = '你和队友';
+        } else if (winner && winner.team === 'npc') {
+            winnerDesc = 'NPC';
+        } else {
+            winnerDesc = '平局';
+        }
+    }
+    
+    var record = {
         gameName: '大富翁',
         mode: mode === 'single' ? '单人模式' : '双人模式',
-        result: winner && winner.id === 'self' ? 'win' : (winner && winner.team === 'player' ? 'win' : 'loss'),
-        winner: winner ? (winner.displayName || winner.team || '未知') : '平局',
+        result: isWin ? 'win' : (winnerDesc === '平局' ? 'draw' : 'loss'),
+        winner: winnerDesc,
         players: players,
-        round: gameState.round,
+        round: gameState.round || 0,
         time: Date.now()
     };
     
@@ -12754,7 +13847,10 @@ function saveGameHistory(friendId, gameState, winner) {
     } else {
         appData.gameHistory[friendId].double.push(record);
     }
+    
+    // 强制保存
     saveData();
+    console.log('✅ 大富翁战绩已保存:', record);
 }
 
 // 生成好友评论
@@ -12844,15 +13940,15 @@ function renderMonopolyMap(gameState, container) {
     
     // 严格按照你的图：外1(28格) + 外2(4格) + 内2(12格) = 44格
     var mapLayout = [
-        [0, 1, 2, 3, 4, 5, 6, 7],
-        [27, -1, -1, 28, -1, -1, -1, 8],
-        [26, -1, 32, 33, 34, 35, -1, 9],
-        [25, -1, 36, -1, -1, 38, -1, 10],
-        [24, 29, 37, -1, -1, 39, 30, 11],
-        [23, -1, 40, 41, 42, 43, -1, 12],
-        [22, -1, -1, 31, -1, -1, -1, 13],
-        [14, 15, 16, 17, 18, 19, 20, 21]
-    ];
+    [0, 1, 2, 3, 4, 5, 6, 7],
+    [27, -1, -1, 28, -1, -1, -1, 8],
+    [26, -1, 43, 29, 30, 31, -1, 9],
+    [25, -1, 42, -1, -1, 32, -1, 10],
+    [24, 41, 40, -1, -1, 33, 34, 11],
+    [23, -1, 39, 37, 36, 35, -1, 12],
+    [22, -1, -1, 38, -1, -1, -1, 13],
+    [21, 20, 19, 18, 17, 16, 15, 14]
+];
     
     // 先找出所有需要合并的空白区域 (连续的 -1)
     // 用 Set 记录哪些 (row, col) 是空白
@@ -13268,6 +14364,54 @@ function addGameComment(gameWin, sender, comment) {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
+// ==================== 脑筋急转弯题库 ====================
+var RIDDLES = [
+    { question: "什么东西越洗越脏？", options: ["水", "衣服", "手", "肥皂"], answer: 0 },
+    { question: "什么东西有头无脚？", options: ["针", "钉子", "筷子", "铅笔"], answer: 0 },
+    { question: "什么东西越热越爱出来？", options: ["汗", "水蒸气", "火", "烟"], answer: 0 },
+    { question: "什么东西越剪越大？", options: ["洞", "纸", "布", "头发"], answer: 0 },
+    { question: "什么东西有面没有口，有脚没有手，虽有四只脚，自己不会走？", options: ["桌子", "椅子", "床", "柜子"], answer: 0 },
+    { question: "什么东西比天还高？", options: ["心", "云", "山", "飞机"], answer: 0 },
+    { question: "什么东西只能加不能减？", options: ["年龄", "身高", "体重", "钱"], answer: 0 },
+    { question: "什么东西每天都在变，却永远不变？", options: ["今天", "时间", "天气", "心情"], answer: 0 },
+    { question: "什么东西越走越短？", options: ["蜡烛", "路", "时间", "影子"], answer: 0 },
+    { question: "什么东西有头有尾，却没有身体？", options: ["硬币", "鱼", "蛇", "绳子"], answer: 0 },
+    { question: "什么东西越吃越饿？", options: ["零食", "饭", "水果", "糖"], answer: 0 },
+    { question: "什么东西越喝越渴？", options: ["海水", "果汁", "牛奶", "茶"], answer: 0 },
+    { question: "什么东西越擦越脏？", options: ["黑板擦", "抹布", "纸", "玻璃"], answer: 0 },
+    { question: "什么东西有眼不能看？", options: ["针眼", "人", "动物", "鱼"], answer: 0 },
+    { question: "什么东西有嘴不说话？", options: ["茶壶", "人", "鹦鹉", "喇叭"], answer: 0 },
+    { question: "什么东西有脚不走路？", options: ["椅子", "人", "狗", "车"], answer: 0 },
+    { question: "什么东西有手不拿东西？", options: ["手套", "人", "猴子", "机器人"], answer: 0 },
+    { question: "什么东西越晒越湿？", options: ["雪", "水", "冰", "衣服"], answer: 0 },
+    { question: "什么东西越洗越小？", options: ["肥皂", "衣服", "手", "水"], answer: 0 },
+    { question: "什么东西越磨越亮？", options: ["刀", "石头", "铁", "木头"], answer: 0 },
+    { question: "什么东西越打越精神？", options: ["球", "人", "鼓", "钟"], answer: 0 },
+    { question: "什么东西越晒越软？", options: ["冰淇淋", "面包", "石头", "木头"], answer: 0 },
+    { question: "什么东西越吹越飞？", options: ["蒲公英", "树叶", "纸", "羽毛"], answer: 0 },
+    { question: "什么东西越摇越响？", options: ["铃铛", "树", "风铃", "手机"], answer: 0 },
+    { question: "什么东西越转越稳？", options: ["陀螺", "车轮", "风扇", "地球"], answer: 0 },
+    { question: "什么东西越滚越大？", options: ["雪球", "球", "轮胎", "石头"], answer: 0 },
+    { question: "什么东西越飞越高？", options: ["风筝", "鸟", "飞机", "气球"], answer: 0 },
+    { question: "什么东西越游越快？", options: ["鱼", "鸭子", "船", "人"], answer: 0 },
+    { question: "什么东西越等越久？", options: ["公交车", "时间", "朋友", "饭"], answer: 0 },
+    { question: "什么东西越看越美？", options: ["画", "风景", "花", "星星"], answer: 0 },
+    { question: "什么东西越听越醉？", options: ["音乐", "风", "雨", "故事"], answer: 0 },
+    { question: "什么东西越读越深？", options: ["书", "文章", "诗", "信"], answer: 0 },
+    { question: "什么东西越想越远？", options: ["梦想", "回忆", "未来", "家乡"], answer: 0 },
+    { question: "什么东西越爱越真？", options: ["感情", "朋友", "家人", "生活"], answer: 0 },
+    { question: "什么东西越笑越开心？", options: ["快乐", "阳光", "春天", "礼物"], answer: 0 },
+    { question: "什么东西越哭越累？", options: ["悲伤", "眼睛", "心", "夜晚"], answer: 0 },
+    { question: "什么东西越静越空？", options: ["夜晚", "房间", "森林", "大海"], answer: 0 },
+    { question: "什么东西越闹越吵？", options: ["集市", "学校", "车站", "广场"], answer: 0 },
+    { question: "什么东西越亮越美？", options: ["星星", "灯", "太阳", "钻石"], answer: 0 },
+    { question: "什么东西越暗越深？", options: ["夜空", "海底", "森林", "山洞"], answer: 0 },
+    { question: "什么东西越冷越硬？", options: ["冰", "石头", "铁", "木头"], answer: 0 },
+    { question: "什么东西越热越软？", options: ["棉花糖", "巧克力", "黄油", "蜡"], answer: 0 },
+    { question: "什么东西越轻越飘？", options: ["羽毛", "纸", "蒲公英", "云"], answer: 0 },
+    { question: "什么东西越重越沉？", options: ["石头", "铁", "铅", "水"], answer: 0 }
+];
+
 // 启动大富翁游戏（从startGame调用）- 修复初始渲染
 function startMonopolyGame(sessionId, friendId, friend, mode, gameWin) {
     const gameState = initMonopolyGame(sessionId, friendId, friend, mode);
@@ -13453,28 +14597,35 @@ function addChatLog(gameState, msg) {
     // 仅用于游戏内部事件记录
 }
 
-function stepMovePlayer(gameState, player, fromIdx, toIdx, callback) {
-    var steps = [];
+function stepMovePlayer(gameState, player, fromIdx, toIdx, callback, isAI) {
+    // 直接移动，无岔路选择
+    var totalSteps = 0;
     if (toIdx > fromIdx) {
-        for (var i = fromIdx + 1; i <= toIdx; i++) steps.push(i);
+        totalSteps = toIdx - fromIdx;
     } else {
-        for (var i = fromIdx + 1; i < gameState.cells.length; i++) steps.push(i);
-        for (var i = 0; i <= toIdx; i++) steps.push(i);
+        totalSteps = (gameState.cells.length - fromIdx) + toIdx;
     }
     
-    var stepIndex = 0;
-    var interval = setInterval(function() {
-        if (stepIndex >= steps.length) {
-            clearInterval(interval);
+    var stepsTaken = 0;
+    var currentPos = fromIdx;
+    
+    function takeStep() {
+        if (stepsTaken >= totalSteps) {
             player.position = toIdx;
             renderMonopolyMap(gameState, gameState._mapContainer);
             if (callback) callback();
             return;
         }
-        player.position = steps[stepIndex];
+        
+        currentPos = (currentPos + 1) % gameState.cells.length;
+        stepsTaken++;
+        player.position = currentPos;
         renderMonopolyMap(gameState, gameState._mapContainer);
-        stepIndex++;
-    }, 480);
+        
+        setTimeout(takeStep, 450);
+    }
+    
+    setTimeout(takeStep, 450);
 }
 
 function doPlayerRoll(gameState) {
@@ -13514,19 +14665,19 @@ function doPlayerRoll(gameState) {
             var passedStart = (newPos < oldPos) || (oldPos + diceValue >= gameState.cells.length);
             
             setEventLog(gameState, player.displayName + ' 掷出了 ' + diceValue + ' 步', '#07c160');
+            
+            // 直接移动，无岔路选择
             stepMovePlayer(gameState, player, oldPos, newPos, function() {
                 if (passedStart) {
                     player.money += MONOPOLY.PASS_START_BONUS;
                     player.totalMoney += MONOPOLY.PASS_START_BONUS;
                     setEventLog(gameState, player.displayName + ' 经过起点，获得 ' + MONOPOLY.PASS_START_BONUS + ' 元', '#ff9500');
-                    
                 }
                 
                 if (oldPos > newPos && !(oldPos === 0 && newPos === gameState.cells.length - 1)) {
                     player.money += MONOPOLY.LAP_BONUS;
                     player.totalMoney += MONOPOLY.LAP_BONUS;
                     setEventLog(gameState, player.displayName + ' 绕完一圈，奖励 ' + MONOPOLY.LAP_BONUS + ' 元', '#ff9500');
-                    
                 }
                 
                 executeCellEffect(gameState, player, newPos, function(needAction) {
@@ -13547,10 +14698,10 @@ function doPlayerRoll(gameState) {
                     }
                     
                     setTimeout(function() {
-    nextTurn(gameState);
-    rollBtn.disabled = false;
-    rollBtn.style.opacity = '1';
-}, 4000 + Math.random() * 2000);
+                        nextTurn(gameState);
+                        rollBtn.disabled = false;
+                        rollBtn.style.opacity = '1';
+                    }, 4000 + Math.random() * 2000);
                 });
             });
         }
@@ -13572,24 +14723,117 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
     }
     
     if (cell.type === MONOPOLY.CELL_TYPES.CHANCE) {
+        var isNPC = (player.id === 'npc1' || player.id === 'npc2');
+        var isFriend = (player.id === gameState.friendId);
+        var isNPCPlayer = isNPC || isFriend;
+        
+        if (Math.random() < 0.35) {
+            gameState.waitingForRoll = false;
+            var riddle = RIDDLES[Math.floor(Math.random() * RIDDLES.length)];
+            var reward = 150;
+            var penalty = 80;
+            
+            if (isNPCPlayer) {
+                var isCorrect = Math.random() < 0.5;
+                setTimeout(function() {
+                    if (isCorrect) {
+                        player.money += reward;
+                        player.totalMoney += reward;
+                        setEventLog(gameState, player.displayName + ' 答对了 +' + reward + ' 金币', '#07c160');
+                    } else {
+                        player.money -= penalty;
+                        player.totalMoney -= penalty;
+                        if (player.money < 0) player.money = 0;
+                        setEventLog(gameState, player.displayName + ' 答错了 -' + penalty + ' 金币', '#ff3b30');
+                    }
+                    gameState.waitingForRoll = true;
+                    renderMonopolyMap(gameState, mapContainer);
+                    updateMonopolyStatus(gameState, 'gameStatusBar');
+                    if (callback) callback(false);
+                }, 800);
+                return;
+            }
+            
+            var optionsHtml = '';
+            for (var i = 0; i < riddle.options.length; i++) {
+                var letter = String.fromCharCode(65 + i);
+                optionsHtml += '<div class="riddle-option" data-option="' + i + '" style="padding:8px 12px;margin:4px 0;background:#f5f5f5;border-radius:8px;cursor:pointer;border:1px solid #ddd;">' + letter + '. ' + escapeHtml(riddle.options[i]) + '</div>';
+            }
+            
+            var modalHtml = `
+                <div class="modal-container" style="width: 90%; max-width: 400px; padding: 20px; border-radius: 16px; text-align: center;">
+                    <div style="font-size: 40px; margin-bottom: 6px;">🧠</div>
+                    <div style="font-size: 18px; font-weight: 600; margin-bottom: 4px; color: #4a3a2a;">脑筋急转弯</div>
+                    <div style="font-size: 14px; color: #8e8e93; margin-bottom: 14px; background: #f5f0eb; padding: 12px 16px; border-radius: 10px; line-height: 1.6; min-height: 50px;">
+                        ${escapeHtml(riddle.question)}
+                    </div>
+                    <div style="font-size: 13px; color: #8e8e93; margin-bottom: 12px;">
+                        答对 +${reward} 金币 | 答错 -${penalty} 金币
+                    </div>
+                    <div style="text-align:left; margin-bottom: 12px;">
+                        ${optionsHtml}
+                    </div>
+                    <button id="riddleSkipBtn" style="background: #888; padding: 4px 16px; font-size: 11px; border: none; color: white; border-radius: 14px; cursor: pointer;">跳过（不扣钱）</button>
+                </div>
+            `;
+            
+            var modal = showModal(modalHtml);
+            
+            var skipBtn = modal.querySelector('#riddleSkipBtn');
+            if (skipBtn) {
+                skipBtn.onclick = function() {
+                    modal.remove();
+                    setEventLog(gameState, '跳过了脑筋急转弯', '#888');
+                    gameState.waitingForRoll = true;
+                    renderMonopolyMap(gameState, mapContainer);
+                    updateMonopolyStatus(gameState, 'gameStatusBar');
+                    if (callback) callback(false);
+                };
+            }
+            
+            var optionEls = modal.querySelectorAll('.riddle-option');
+            for (var i = 0; i < optionEls.length; i++) {
+                (function(el) {
+                    el.onclick = function() {
+                        var selected = parseInt(el.dataset.option);
+                        var isCorrect = (selected === riddle.answer);
+                        modal.remove();
+                        if (isCorrect) {
+                            player.money += reward;
+                            player.totalMoney += reward;
+                            setEventLog(gameState, '答对了！+' + reward + ' 金币', '#07c160');
+                        } else {
+                            player.money -= penalty;
+                            player.totalMoney -= penalty;
+                            if (player.money < 0) player.money = 0;
+                            setEventLog(gameState, '答错了！-' + penalty + ' 金币', '#ff3b30');
+                        }
+                        gameState.waitingForRoll = true;
+                        renderMonopolyMap(gameState, mapContainer);
+                        updateMonopolyStatus(gameState, 'gameStatusBar');
+                        if (callback) callback(false);
+                    };
+                })(optionEls[i]);
+            }
+            return;
+        }
+        
         var event = MONOPOLY.CHANCE_EVENTS[Math.floor(Math.random() * MONOPOLY.CHANCE_EVENTS.length)];
         player.money += event.effect;
         player.totalMoney += event.effect;
         var sign = event.effect > 0 ? '+' : '';
         setEventLog(gameState, player.displayName + ' ' + event.text + ' (' + sign + event.effect + ')', event.effect > 0 ? '#07c160' : '#ff3b30');
         
-        // ===== 检查是否破产 =====
         if (player.money < 0) {
             player.money = 0;
             player.isAlive = false;
-            // ===== 破产后房子变无主 =====
             for (var i = 0; i < gameState.cells.length; i++) {
                 if (gameState.cells[i].owner === player.id) {
                     gameState.cells[i].owner = null;
                     gameState.cells[i].isUpgraded = false;
                 }
             }
-            setEventLog(gameState, '💔 ' + player.displayName + ' 破产了！', '#ff3b30');
+            setEventLog(gameState, player.displayName + ' 破产了！', '#ff3b30');
         }
         renderMonopolyMap(gameState, mapContainer);
         updateMonopolyStatus(gameState, 'gameStatusBar');
@@ -13601,19 +14845,18 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
         if (player.id === 'self') {
             if (player.money >= MONOPOLY.BUY_PRICE) {
                 gameState.waitingForRoll = false;
-                // ✅ 弹窗选择购买
                 var buyModal = showModal(`
                     <div class="modal-container" style="width: 85%; max-width: 350px; padding: 20px; text-align: center; border-radius: 16px;">
-                        <div style="font-size: 18px; font-weight: 600; margin-bottom: 6px;">🏠 到达空地</div>
+                        <div style="font-size: 18px; font-weight: 600; margin-bottom: 6px;">到达空地</div>
                         <div style="font-size: 14px; color: #8e8e93; margin-bottom: 12px;">
                             ${escapeHtml(player.displayName)} 到达了一块空地
                         </div>
                         <div style="font-size: 16px; font-weight: 500; color: #07c160; margin-bottom: 12px;">
-                            售价：¥${MONOPOLY.BUY_PRICE}（余额：¥${player.money}）
+                            售价：${MONOPOLY.BUY_PRICE} 金币（余额：${player.money} 金币）
                         </div>
                         <div style="display: flex; gap: 10px;">
-                            <button id="buyConfirmBtn" style="flex: 1; background: #07c160; padding: 10px; font-size: 14px; border-radius: 20px; border: none; color: white; cursor: pointer;">✅ 购买</button>
-                            <button id="buySkipBtn" style="flex: 1; background: #888; padding: 10px; font-size: 14px; border-radius: 20px; border: none; color: white; cursor: pointer;">❌ 跳过</button>
+                            <button id="buyConfirmBtn" style="flex: 1; background: #07c160; padding: 10px; font-size: 14px; border-radius: 20px; border: none; color: white; cursor: pointer;">购买</button>
+                            <button id="buySkipBtn" style="flex: 1; background: #888; padding: 10px; font-size: 14px; border-radius: 20px; border: none; color: white; cursor: pointer;">跳过</button>
                         </div>
                     </div>
                 `);
@@ -13623,7 +14866,7 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
                     player.totalMoney -= MONOPOLY.BUY_PRICE;
                     cell.owner = player.id;
                     player.properties.push(cellIndex);
-                    setEventLog(gameState, player.displayName + ' 购买了空地 ¥' + MONOPOLY.BUY_PRICE, '#07c160');
+                    setEventLog(gameState, player.displayName + ' 购买了空地，花费 ' + MONOPOLY.BUY_PRICE + ' 金币', '#07c160');
                     gameState.waitingForRoll = true;
                     renderMonopolyMap(gameState, mapContainer);
                     updateMonopolyStatus(gameState, 'gameStatusBar');
@@ -13647,7 +14890,7 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
                 player.totalMoney -= MONOPOLY.BUY_PRICE;
                 cell.owner = player.id;
                 player.properties.push(cellIndex);
-                setEventLog(gameState, player.displayName + ' 购买了空地 ¥' + MONOPOLY.BUY_PRICE, '#07c160');
+                setEventLog(gameState, player.displayName + ' 购买了空地，花费 ' + MONOPOLY.BUY_PRICE + ' 金币', '#07c160');
             } else {
                 setEventLog(gameState, player.displayName + ' 跳过了购买', '#888');
             }
@@ -13658,7 +14901,6 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
     
     var owner = gameState.players.find(function(p) { return p.id === cell.owner; });
     if (owner && owner.id !== player.id) {
-        // ===== ✅ 双人模式队友免租 =====
         var isSameTeam = false;
         if (gameState.mode === 'double') {
             var friendId = gameState.friendId;
@@ -13670,34 +14912,30 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
         }
         
         if (isSameTeam) {
-            // ===== 队友免租 =====
-            setEventLog(gameState, '🤝 ' + player.displayName + ' 走到队友 ' + owner.displayName + ' 的地盘，免租！', '#07c160');
+            setEventLog(gameState, player.displayName + ' 走到队友 ' + owner.displayName + ' 的地盘，免租', '#07c160');
             renderMonopolyMap(gameState, mapContainer);
             updateMonopolyStatus(gameState, 'gameStatusBar');
             if (callback) callback(false);
             return;
         }
         
-        // ===== 非队友，正常收租 =====
         var rent = cell.isUpgraded ? MONOPOLY.UPGRADE_RENT : MONOPOLY.RENT_PRICE;
         player.money -= rent;
         player.totalMoney -= rent;
         owner.money += rent;
         owner.totalMoney += rent;
-        setEventLog(gameState, player.displayName + ' 向 ' + owner.displayName + ' 支付租金 ¥' + rent, '#ff6b6b');
+        setEventLog(gameState, player.displayName + ' 向 ' + owner.displayName + ' 支付租金 ' + rent + ' 金币', '#ff6b6b');
         
-        // ===== ✅ 检查破产 =====
         if (player.money < 0) {
             player.money = 0;
             player.isAlive = false;
-            // ===== 破产后房子变无主 =====
             for (var i = 0; i < gameState.cells.length; i++) {
                 if (gameState.cells[i].owner === player.id) {
                     gameState.cells[i].owner = null;
                     gameState.cells[i].isUpgraded = false;
                 }
             }
-            setEventLog(gameState, '💔 ' + player.displayName + ' 破产了！', '#ff3b30');
+            setEventLog(gameState, player.displayName + ' 破产了！', '#ff3b30');
         }
         renderMonopolyMap(gameState, mapContainer);
         updateMonopolyStatus(gameState, 'gameStatusBar');
@@ -13709,19 +14947,18 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
         if (!cell.isUpgraded && player.id === 'self') {
             if (player.money >= MONOPOLY.UPGRADE_PRICE) {
                 gameState.waitingForRoll = false;
-                // ✅ 弹窗选择升级
                 var upgradeModal = showModal(`
                     <div class="modal-container" style="width: 85%; max-width: 350px; padding: 20px; text-align: center; border-radius: 16px;">
-                        <div style="font-size: 18px; font-weight: 600; margin-bottom: 6px;">⬆️ 升级地产</div>
+                        <div style="font-size: 18px; font-weight: 600; margin-bottom: 6px;">升级地产</div>
                         <div style="font-size: 14px; color: #8e8e93; margin-bottom: 12px;">
                             你到达了自己的地产
                         </div>
                         <div style="font-size: 16px; font-weight: 500; color: #ff6b6b; margin-bottom: 12px;">
-                            升级费：¥${MONOPOLY.UPGRADE_PRICE}（余额：¥${player.money}）
+                            升级费：${MONOPOLY.UPGRADE_PRICE} 金币（余额：${player.money} 金币）
                         </div>
                         <div style="display: flex; gap: 10px;">
-                            <button id="upgradeConfirmBtn" style="flex: 1; background: #ff6b6b; padding: 10px; font-size: 14px; border-radius: 20px; border: none; color: white; cursor: pointer;">✅ 升级</button>
-                            <button id="upgradeSkipBtn" style="flex: 1; background: #888; padding: 10px; font-size: 14px; border-radius: 20px; border: none; color: white; cursor: pointer;">❌ 跳过</button>
+                            <button id="upgradeConfirmBtn" style="flex: 1; background: #ff6b6b; padding: 10px; font-size: 14px; border-radius: 20px; border: none; color: white; cursor: pointer;">升级</button>
+                            <button id="upgradeSkipBtn" style="flex: 1; background: #888; padding: 10px; font-size: 14px; border-radius: 20px; border: none; color: white; cursor: pointer;">跳过</button>
                         </div>
                     </div>
                 `);
@@ -13730,7 +14967,7 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
                     player.money -= MONOPOLY.UPGRADE_PRICE;
                     player.totalMoney -= MONOPOLY.UPGRADE_PRICE;
                     cell.isUpgraded = true;
-                    setEventLog(gameState, player.displayName + ' 升级了地产 ¥' + MONOPOLY.UPGRADE_PRICE, '#ff6b6b');
+                    setEventLog(gameState, player.displayName + ' 升级了地产，花费 ' + MONOPOLY.UPGRADE_PRICE + ' 金币', '#ff6b6b');
                     gameState.waitingForRoll = true;
                     renderMonopolyMap(gameState, mapContainer);
                     updateMonopolyStatus(gameState, 'gameStatusBar');
@@ -13753,7 +14990,7 @@ function executeCellEffect(gameState, player, cellIndex, callback) {
                 player.money -= MONOPOLY.UPGRADE_PRICE;
                 player.totalMoney -= MONOPOLY.UPGRADE_PRICE;
                 cell.isUpgraded = true;
-                setEventLog(gameState, player.displayName + ' 升级了地产 ¥' + MONOPOLY.UPGRADE_PRICE, '#ff6b6b');
+                setEventLog(gameState, player.displayName + ' 升级了地产，花费 ' + MONOPOLY.UPGRADE_PRICE + ' 金币', '#ff6b6b');
             } else {
                 setEventLog(gameState, player.displayName + ' 跳过了升级', '#888');
             }
@@ -13784,16 +15021,12 @@ function doAITurn(gameState) {
     
     var friend = gameState._friend;
     var sessionId = gameState._sessionId;
-    // ===== 只有好友（非NPC）在回合开始时发送评论 =====
-if (player.id === gameState._friendId && gameState._friend && !player.isNPC) {
-    let comment = generateGameChatReply(gameState._friendId);
-    if (comment) {
-        // ===== 修复：显示在游戏聊天区域，不显示在状态栏 =====
-        addGameComment(gameState._gameWin, gameState._friend.name, comment);
+    if (player.id === gameState._friendId && gameState._friend && !player.isNPC) {
+        let comment = generateGameChatReply(gameState._friendId);
+        if (comment) {
+            addGameComment(gameState._gameWin, gameState._friend.name, comment);
+        }
     }
-}
-    // ===== 修改点2：完全删除 NPC 评论代码块 =====
-    // NPC 不发送任何评论（已删除 NPC 评论代码）
     
     setTimeout(function() {
         var diceValue = rollDice();
@@ -13805,18 +15038,17 @@ if (player.id === gameState._friendId && gameState._friend && !player.isNPC) {
         var newPos = (oldPos + diceValue) % gameState.cells.length;
         var passedStart = (newPos < oldPos) || (oldPos + diceValue >= gameState.cells.length);
         
+        // 直接移动，无岔路选择
         stepMovePlayer(gameState, player, oldPos, newPos, function() {
             if (passedStart) {
                 player.money += MONOPOLY.PASS_START_BONUS;
                 player.totalMoney += MONOPOLY.PASS_START_BONUS;
                 setEventLog(gameState, player.displayName + ' 经过起点，获得 ' + MONOPOLY.PASS_START_BONUS + ' 元', '#ff9500');
-                
             }
             if (oldPos > newPos && !(oldPos === 0 && newPos === gameState.cells.length - 1)) {
                 player.money += MONOPOLY.LAP_BONUS;
                 player.totalMoney += MONOPOLY.LAP_BONUS;
                 setEventLog(gameState, player.displayName + ' 绕完一圈，奖励 ' + MONOPOLY.LAP_BONUS + ' 元', '#ff9500');
-                
             }
             
             executeCellEffect(gameState, player, newPos, function(needAction) {
@@ -13836,7 +15068,7 @@ if (player.id === gameState._friendId && gameState._friend && !player.isNPC) {
                     rollBtn.style.opacity = '1';
                 }, 500);
             });
-        });
+        }, true);
     }, 800 + Math.random() * 600);
 }
 
@@ -13890,6 +15122,28 @@ function endMonopolyGame(gameState) {
     if (gameState.isGameOver && gameState._ended) return;
     gameState._ended = true;
     
+    // ✅ 清理所有定时器（新增）
+    if (gameState._turnTimer) {
+        clearTimeout(gameState._turnTimer);
+        gameState._turnTimer = null;
+    }
+    if (gameState._aiTimer) {
+        clearTimeout(gameState._aiTimer);
+        gameState._aiTimer = null;
+    }
+    if (gameState._rollTimer) {
+        clearTimeout(gameState._rollTimer);
+        gameState._rollTimer = null;
+    }
+    if (gameState._stepInterval) {
+        clearInterval(gameState._stepInterval);
+        gameState._stepInterval = null;
+    }
+    if (gameState._diceInterval) {
+        clearInterval(gameState._diceInterval);
+        gameState._diceInterval = null;
+    }
+    
     var winner = getWinner(gameState);
     var rollBtn = gameState._rollBtn;
     var friend = gameState._friend;
@@ -13930,28 +15184,26 @@ function endMonopolyGame(gameState) {
     
     setEventLog(gameState, '游戏结束！' + resultText, isWin ? '#07c160' : '#ff9500');
     
-    // 构建详细结果（显示所有玩家资产）
-var detailHtml = '';
-var players = gameState.players;
-for (var i = 0; i < players.length; i++) {
-    var p = players[i];
-    var status = p.isAlive ? '🟢 存活' : '🔴 破产';
-    var propCount = p.properties ? p.properties.length : 0;
-    var totalAsset = p.money + propCount * 200;
-    detailHtml += '<div>' + status + ' ' + p.displayName + '：💰' + p.money + ' 元，🏠' + propCount + '块地产，📊总资产 ' + totalAsset + ' 元</div>';
-}
-
-// ✅ 如果是双人模式，额外显示队伍总资产
-if (gameState.mode === 'double') {
-    var friendId = gameState.friendId;
-    var team1 = gameState.players.filter(function(p) { return p.id === 'self' || p.id === friendId; });
-    var team2 = gameState.players.filter(function(p) { return p.isNPC; });
-    var team1Total = team1.reduce(function(sum, p) { return sum + p.money + p.properties.length * 200; }, 0);
-    var team2Total = team2.reduce(function(sum, p) { return sum + p.money + p.properties.length * 200; }, 0);
-    detailHtml += '<div style="border-top:1px solid #ddd;padding-top:4px;margin-top:4px;">';
-    detailHtml += '👥 玩家队总资产：' + team1Total + ' 元 vs NPC队总资产：' + team2Total + ' 元';
-    detailHtml += '</div>';
-}
+    var detailHtml = '';
+    var players = gameState.players;
+    for (var i = 0; i < players.length; i++) {
+        var p = players[i];
+        var status = p.isAlive ? '🟢 存活' : '🔴 破产';
+        var propCount = p.properties ? p.properties.length : 0;
+        var totalAsset = p.money + propCount * 200;
+        detailHtml += '<div>' + status + ' ' + p.displayName + '：💰' + p.money + ' 元，🏠' + propCount + '块地产，📊总资产 ' + totalAsset + ' 元</div>';
+    }
+    
+    if (gameState.mode === 'double') {
+        var friendId = gameState.friendId;
+        var team1 = gameState.players.filter(function(p) { return p.id === 'self' || p.id === friendId; });
+        var team2 = gameState.players.filter(function(p) { return p.isNPC; });
+        var team1Total = team1.reduce(function(sum, p) { return sum + p.money + p.properties.length * 200; }, 0);
+        var team2Total = team2.reduce(function(sum, p) { return sum + p.money + p.properties.length * 200; }, 0);
+        detailHtml += '<div style="border-top:1px solid #ddd;padding-top:4px;margin-top:4px;">';
+        detailHtml += '👥 玩家队总资产：' + team1Total + ' 元 vs NPC队总资产：' + team2Total + ' 元';
+        detailHtml += '</div>';
+    }
     
     var modalHtml = `
         <div class="modal-container" style="width:90%; max-width:400px; padding:16px; border-radius:16px; text-align:center;">
@@ -13970,6 +15222,12 @@ if (gameState.mode === 'double') {
     if (closeBtn) {
         closeBtn.onclick = function() {
             resultModal.remove();
+            if (gameWin && gameWin.parentElement) {
+                gameWin.remove();
+            }
+            // ✅ 清除全局引用（新增）
+            window._currentMonopolyGame = null;
+            showGameModeSelector(sessionId, friendId, friend, 'monopoly');
         };
     }
     
@@ -13982,7 +15240,7 @@ function sendGameChatMessage(sessionId, message) {
 }
 
 // ==================== 开始游戏（全屏实现） ====================
-function startGame(sessionId, friendId, friend, game, mode) {
+function startGame(sessionId, friendId, friend, game, mode, myColor) {
     let gameNames = {
         'goban': '五子棋',
         'monopoly': '大富翁'
@@ -13994,6 +15252,8 @@ function startGame(sessionId, friendId, friend, game, mode) {
     let displayName = space && space.enabled && space.nickname ? space.nickname : friend.name;
     
     let savedChatWindow = currentOpenChatWindow;
+    let savedSessionId = currentOpenSessionId;
+    let savedFriendId = currentOpenFriendId;
     
     let gameWin = document.createElement('div');
     gameWin.className = 'chat-view';
@@ -14023,39 +15283,34 @@ function startGame(sessionId, friendId, friend, game, mode) {
     let gameBodyHtml = '';
     if (game === 'monopoly') {
         gameBodyHtml = `
-            <div id="gameBoardArea" style="flex: 75; display: flex; flex-direction: column; background: #f0f0f2; padding: 6px 10px; overflow: hidden; position: relative; min-height: 0;">
-                <div id="monopolyGameContainer" style="flex:1; display:flex; flex-direction:column; width:100%; min-height:0;">
-                    <div id="gameStatusBar" style="display:flex; justify-content:space-between; font-size:10px; color:#8e8e93; padding:2px 4px 4px 4px; flex-shrink:0; flex-wrap:wrap; gap:2px;">
-                        <span id="gameTurnInfo">第 1/20 回合</span>
-                        <span id="gamePlayerInfo">你: ¥1000</span>
-                        <span id="gameFriendInfo">${escapeHtml(displayName)}: ¥1000</span>
-                        ${mode === 'double' ? `<span id="gameNpcInfo">NPC1: ¥1000</span>` : ''}
-                    </div>
-                    <div id="monopolyMap" style="flex:1; display:grid; grid-template-columns:repeat(6,1fr); grid-template-rows:repeat(6,1fr); gap:2px; background:#d0d0d5; padding:2px; border-radius:6px; min-height:0; aspect-ratio:1/1; max-height:100%; margin:0 auto; width:100%;">
-                    </div>
-                    <div id="gameActionArea" style="display:flex; gap:6px; padding:6px 0 2px 0; flex-shrink:0; align-items:center; flex-wrap:wrap; justify-content:center;">
-                        <button id="rollDiceBtn" style="flex:2; min-width:80px; background:#07c160; padding:8px 0; font-size:15px; border:none; color:white; border-radius:20px; font-weight:600; cursor:pointer;">🎲 掷骰子</button>
-                        <button id="buyPropertyBtn" style="flex:1; min-width:60px; background:#FF9500; padding:8px 0; font-size:14px; border:none; color:white; border-radius:20px; font-weight:500; cursor:pointer; display:none;">🏠 购买</button>
-                        <button id="upgradePropertyBtn" style="flex:1; min-width:60px; background:#FF6B6B; padding:8px 0; font-size:14px; border:none; color:white; border-radius:20px; font-weight:500; cursor:pointer; display:none;">⬆️ 升级</button>
-                        <button id="skipTurnBtn" style="flex:0.5; min-width:50px; background:#888; padding:8px 0; font-size:12px; border:none; color:white; border-radius:20px; cursor:pointer; display:none;">跳过</button>
-                        <span id="diceResultDisplay" style="font-size:22px; min-width:40px; text-align:center;">🎲</span>
-                    </div>
-                    <div id="gameEventLog" style="font-size:12px; color:#1c1c1e; padding:4px 6px; min-height:28px; flex-shrink:0; text-align:center; background:rgba(255,255,255,0.5); border-radius:6px; margin-top:2px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">
-                        🎲 点击"掷骰子"开始你的回合
-                    </div>
+        <div id="gameBoardArea" style="flex: 75; display: flex; flex-direction: column; background: #f0f0f2; padding: 6px 10px; overflow: hidden; position: relative; min-height: 0;">
+            <div id="monopolyGameContainer" style="flex:1; display:flex; flex-direction:column; width:100%; min-height:0;">
+                <div id="gameStatusBar" style="display:flex; justify-content:space-between; font-size:10px; color:#8e8e93; padding:2px 4px 4px 4px; flex-shrink:0; flex-wrap:wrap; gap:2px;">
+                    <span id="gameTurnInfo">第 1/20 回合</span>
+                    <span id="gamePlayerInfo">你: ¥1000</span>
+                    <span id="gameFriendInfo">${escapeHtml(displayName)}: ¥1000</span>
+                    ${mode === 'double' ? `<span id="gameNpcInfo">NPC1: ¥1000</span>` : ''}
+                </div>
+                <div id="monopolyMap" style="flex:1; display:grid; grid-template-columns:repeat(6,1fr); grid-template-rows:repeat(6,1fr); gap:2px; background:#d0d0d5; padding:2px; border-radius:6px; min-height:0; aspect-ratio:1/1; max-height:100%; margin:0 auto; width:100%;">
+                </div>
+                <div id="gameActionArea" style="display:flex; gap:6px; padding:6px 0 2px 0; flex-shrink:0; align-items:center; flex-wrap:wrap; justify-content:center;">
+                    <button id="rollDiceBtn" style="flex:2; min-width:80px; background:#07c160; padding:8px 0; font-size:15px; border:none; color:white; border-radius:20px; font-weight:600; cursor:pointer;">🎲 掷骰子</button>
+                    <button id="buyPropertyBtn" style="flex:1; min-width:60px; background:#FF9500; padding:8px 0; font-size:14px; border:none; color:white; border-radius:20px; font-weight:500; cursor:pointer; display:none;">🏠 购买</button>
+                    <button id="upgradePropertyBtn" style="flex:1; min-width:60px; background:#FF6B6B; padding:8px 0; font-size:14px; border:none; color:white; border-radius:20px; font-weight:500; cursor:pointer; display:none;">⬆️ 升级</button>
+                    <button id="skipTurnBtn" style="flex:0.5; min-width:50px; background:#888; padding:8px 0; font-size:12px; border:none; color:white; border-radius:20px; cursor:pointer; display:none;">跳过</button>
+                    <span id="diceResultDisplay" style="font-size:22px; min-width:40px; text-align:center;">🎲</span>
+                </div>
+                <div id="gameEventLog" style="font-size:12px; color:#1c1c1e; padding:4px 6px; min-height:28px; flex-shrink:0; text-align:center; background:rgba(255,255,255,0.5); border-radius:6px; margin-top:2px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">
+                    🎲 点击"掷骰子"开始你的回合
                 </div>
             </div>
-        `;
+        </div>
+    `;
     } else {
         gameBodyHtml = `
-            <div id="gameBoardArea" style="flex: 75; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #f0f0f2; padding: 12px; overflow: hidden; position: relative; min-height: 0;">
-                <div style="font-size: 48px; margin-bottom: 10px;">🚧</div>
-                <div style="font-size: 18px; font-weight: 500; color: #1c1c1e;">${gameName} 开发中</div>
-                <div style="font-size: 14px; color: #8e8e93; margin-top: 4px;">敬请期待！</div>
-                <div style="font-size: 13px; color: #07c160; margin-top: 8px;">我 vs ${escapeHtml(displayName)}</div>
-                <div style="font-size: 12px; color: #8e8e93; margin-top: 2px;">${modeName}</div>
-            </div>
-        `;
+        <div id="gameBoardArea" style="flex: 75; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #f0f0f2; padding: 12px; overflow: hidden; position: relative; min-height: 0;">
+        </div>
+    `;
     }
     
     let chatHtml = `
@@ -14071,32 +15326,114 @@ function startGame(sessionId, friendId, friend, game, mode) {
     `;
     
     gameWin.innerHTML = headerHtml + gameBodyHtml + chatHtml;
-    document.body.appendChild(gameWin);
     
     window._currentGameWindow = gameWin;
+    document.body.appendChild(gameWin);
     
+    // ============================================================
+    // ★★★ 关键修复：在启动游戏之前绑定退出按钮 ★★★
+    // ============================================================
+    let exitBtn = gameWin.querySelector('#exitGameBtn');
+    if (exitBtn) {
+        let newExitBtn = exitBtn.cloneNode(true);
+        exitBtn.parentNode.replaceChild(newExitBtn, exitBtn);
+        exitBtn = newExitBtn;
+        
+        exitBtn.onclick = function() {
+            // ========== 大富翁退出 ==========
+            if (game === 'monopoly' && window._currentMonopolyGame) {
+                let gameState = window._currentMonopolyGame;
+                
+                if (!gameState.isGameOver) {
+                    if (!confirm('⚠️ 确定要退出游戏吗？当前进度将丢失！')) {
+                        return;
+                    }
+                }
+                
+                gameState.isGameOver = true;
+                gameState._ended = true;
+                
+                if (gameState._rollBtn) {
+                    gameState._rollBtn.disabled = true;
+                    gameState._rollBtn.style.opacity = '0.5';
+                }
+                if (gameState._buyBtn) {
+                    gameState._buyBtn.style.display = 'none';
+                }
+                if (gameState._upgradeBtn) {
+                    gameState._upgradeBtn.style.display = 'none';
+                }
+                if (gameState._skipBtn) {
+                    gameState._skipBtn.style.display = 'none';
+                }
+                
+                if (gameState._turnTimer) {
+                    clearTimeout(gameState._turnTimer);
+                    gameState._turnTimer = null;
+                }
+                if (gameState._aiTimer) {
+                    clearTimeout(gameState._aiTimer);
+                    gameState._aiTimer = null;
+                }
+                if (gameState._rollTimer) {
+                    clearTimeout(gameState._rollTimer);
+                    gameState._rollTimer = null;
+                }
+                if (gameState._stepInterval) {
+                    clearInterval(gameState._stepInterval);
+                    gameState._stepInterval = null;
+                }
+                if (gameState._diceInterval) {
+                    clearInterval(gameState._diceInterval);
+                    gameState._diceInterval = null;
+                }
+                
+                if (gameState._eventLog) {
+                    gameState._eventLog.textContent = '⏹️ 游戏已退出';
+                    gameState._eventLog.style.color = '#8e8e93';
+                }
+                
+                window._currentMonopolyGame = null;
+                
+            // ========== 五子棋退出 ==========
+            } else if (game === 'goban') {
+                if (typeof gameOver !== 'undefined' && !gameOver) {
+                    if (!confirm('⚠️ 确定要退出游戏吗？当前进度将丢失！')) {
+                        return;
+                    }
+                }
+                if (typeof gameOver !== 'undefined') {
+                    gameOver = true;
+                }
+                if (typeof clearAllGobanTimers === 'function') {
+                    clearAllGobanTimers();
+                }
+                if (window._currentGameWindow) {
+                    window._currentGameWindow = null;
+                }
+            }
+            
+            if (gameWin && gameWin.parentElement) {
+                gameWin.remove();
+            }
+            window._currentGameWindow = null;
+            renderMessagesPage();
+        };
+    }
+    
+    // ============================================================
+    // 启动具体的游戏
+    // ============================================================
+    if (game === 'goban') {
+        startGobanGame(sessionId, friendId, friend, mode, myColor, gameWin);
+        return;
+    }
+
     if (game === 'monopoly') {
         setTimeout(function() {
             startMonopolyGame(sessionId, friendId, friend, mode, gameWin);
         }, 100);
-    }
-    
-    let exitBtn = gameWin.querySelector('#exitGameBtn');
-    if (exitBtn) {
-        exitBtn.onclick = function() {
-            if (confirm('确定要退出游戏吗？')) {
-                if (game === 'monopoly' && window._currentMonopolyGame) {
-                    window._currentMonopolyGame.isGameOver = true;
-                    window._currentMonopolyGame = null;
-                }
-                if (savedChatWindow) {
-                    savedChatWindow.style.display = 'flex';
-                }
-                gameWin.remove();
-                window._currentGameWindow = null;
-                showGameSystemModal(sessionId);
-            }
-        };
+        return;
     }
     
     let chatInput = gameWin.querySelector('#gameChatInput');
@@ -14104,22 +15441,21 @@ function startGame(sessionId, friendId, friend, game, mode) {
     let chatMessages = gameWin.querySelector('#gameChatMessages');
     
     function sendGameChat() {
-    let text = chatInput.value.trim();
-    if (!text) return;
-    var time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    chatMessages.innerHTML += `<div style="font-size:12px;padding:2px 0;">[${time}] 我：${escapeHtml(text)}</div>`;
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-    chatInput.value = '';
-    if (Math.random() < 0.3) {
-        setTimeout(function() {
-            let reply = generateGameChatReply(friendId);
-            if (reply) {
-                // 只显示在游戏聊天区域，不发送到真实聊天
-                addGameComment(gameWin, displayName, reply);
-            }
-        }, Math.random() * 3000 + 1000);
+        let text = chatInput.value.trim();
+        if (!text) return;
+        var time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        chatMessages.innerHTML += `<div style="font-size:12px;padding:2px 0;">[${time}] 我：${escapeHtml(text)}</div>`;
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+        chatInput.value = '';
+        if (Math.random() < 0.1) {
+            setTimeout(function() {
+                let reply = generateGameChatReply(friendId);
+                if (reply) {
+                    addGameComment(gameWin, displayName, reply);
+                }
+            }, Math.random() * 50000 + 10000);
+        }
     }
-}
     
     if (chatSendBtn) chatSendBtn.onclick = sendGameChat;
     if (chatInput) {
@@ -14128,29 +15464,15 @@ function startGame(sessionId, friendId, friend, game, mode) {
         });
     }
     
-    gameWin._gameInterval = gameCommentInterval;
-    
     let observer = new MutationObserver(function() {
         if (!gameWin.parentElement) {
             if (gameWin._gameInterval) clearInterval(gameWin._gameInterval);
             observer.disconnect();
-            if (savedChatWindow) {
-                savedChatWindow.style.display = 'flex';
-            }
             window._currentGameWindow = null;
         }
     });
     observer.observe(document.body, { childList: true });
     gameWin._observer = observer;
-
-// ===== 如果是大富翁，启动大富翁游戏 =====
-if (game === 'monopoly') {
-    // 延迟一帧确保UI已渲染
-    setTimeout(() => {
-        startMonopolyGame(sessionId, friendId, friend, mode, gameWin);
-    }, 100);
-}
-
 }
 
 // ==================== 生成游戏聊天回复 ====================
@@ -14203,35 +15525,42 @@ function generateGameChatReply(friendId) {
 }
 
 // ==================== 游戏历史战绩 ====================
-function showGameHistoryModal(friendId, friendName) {
-    let history = appData.gameHistory[friendId] || { single: [], double: [] };
+// 在文件顶部添加全局变量
+var currentHistoryGame = null;
+
+function showGameHistoryModal(friendId, friendName, game) {
+    currentHistoryGame = game || 'goban';
+    var history = appData.gameHistory[friendId] || { single: [], double: [] };
+    var currentGameName = game || '五子棋';
+    var gameDisplayName = '';
+    if (currentGameName === 'goban') gameDisplayName = '五子棋';
+    else if (currentGameName === 'monopoly') gameDisplayName = '大富翁';
+    else gameDisplayName = currentGameName;
     
     function renderHistory() {
-        let singleTotal = history.single.length;
-        let singleWins = history.single.filter(h => h.result === 'win').length;
-        let singleDraws = history.single.filter(h => h.result === 'draw').length;
-        let singleLosses = singleTotal - singleWins - singleDraws;
+        var singleRecords = history.single.filter(function(h) { return h.gameName === gameDisplayName; });
+        var doubleRecords = history.double.filter(function(h) { return h.gameName === gameDisplayName; });
+        var singleTotal = singleRecords.length;
+        var singleWins = singleRecords.filter(function(h) { return h.result === 'win'; }).length;
+        var singleDraws = singleRecords.filter(function(h) { return h.result === 'draw'; }).length;
+        var singleLosses = singleTotal - singleWins - singleDraws;
+        var doubleTotal = doubleRecords.length;
+        var doubleWins = doubleRecords.filter(function(h) { return h.result === 'win'; }).length;
+        var doubleDraws = doubleRecords.filter(function(h) { return h.result === 'draw'; }).length;
+        var doubleLosses = doubleTotal - doubleWins - doubleDraws;
+        var singleWinRate = singleTotal > 0 ? Math.round((singleWins / singleTotal) * 100) : 0;
+        var doubleWinRate = doubleTotal > 0 ? Math.round((doubleWins / doubleTotal) * 100) : 0;
         
-        let doubleTotal = history.double.length;
-        let doubleWins = history.double.filter(h => h.result === 'win').length;
-        let doubleDraws = history.double.filter(h => h.result === 'draw').length;
-        let doubleLosses = doubleTotal - doubleWins - doubleDraws;
-        
-        let singleWinRate = singleTotal > 0 ? Math.round((singleWins / singleTotal) * 100) : 0;
-        let doubleWinRate = doubleTotal > 0 ? Math.round((doubleWins / doubleTotal) * 100) : 0;
-        
-        let modalHtml = `
+        var modalHtml = `
             <div class="modal-container" style="width: 92%; max-width: 400px; padding: 16px; border-radius: 16px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
                     <span id="backFromHistory" style="cursor: pointer; font-size: 18px; color: #07c160;">← 返回</span>
-                    <span style="font-size: 16px; font-weight: 600;">📊 战绩</span>
+                    <span style="font-size: 16px; font-weight: 600;">📊 战绩 - ${gameDisplayName}</span>
                     <button id="resetGameHistoryBtn" style="background: #ff3b30; padding: 3px 10px; font-size: 11px; border-radius: 12px; border: none; color: white;">重置</button>
                 </div>
-                
                 <div style="font-size: 13px; color: #8e8e93; text-align: center; margin-bottom: 12px;">
-                    与 <strong>${escapeHtml(friendName)}</strong> 的对战记录
+                    与 <strong>${escapeHtml(friendName)}</strong> 的对战记录（${gameDisplayName}）
                 </div>
-                
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
                     <div style="background: #f8f8fa; border-radius: 10px; padding: 12px; text-align: center;">
                         <div style="font-size: 11px; color: #8e8e93;">⚔️ 单人模式</div>
@@ -14254,24 +15583,22 @@ function showGameHistoryModal(friendId, friendName) {
                         <div style="font-size: 10px; color: #8e8e93;">胜率 ${doubleWinRate}%</div>
                     </div>
                 </div>
-                
                 <div style="font-size: 12px; font-weight: 500; margin-bottom: 6px;">📋 最近记录</div>
                 <div id="historyList" style="max-height: 200px; overflow-y: auto; font-size: 12px;">
         `;
-        
-        let allRecords = [
-            ...history.single.map(h => ({ ...h, mode: '单人' })),
-            ...history.double.map(h => ({ ...h, mode: '双人' }))
+        var allRecords = [
+            ...singleRecords.map(function(h) { return { ...h, mode: '单人' }; }),
+            ...doubleRecords.map(function(h) { return { ...h, mode: '双人' }; })
         ];
-        allRecords.sort((a, b) => b.time - a.time);
-        
+        allRecords.sort(function(a, b) { return b.time - a.time; });
         if (allRecords.length === 0) {
-            modalHtml += `<div style="text-align: center; padding: 20px; color: #8e8e93;">暂无对战记录</div>`;
+            modalHtml += '<div style="text-align: center; padding: 20px; color: #8e8e93;">暂无对战记录</div>';
         } else {
-            for (let record of allRecords.slice(0, 20)) {
-                let resultEmoji = record.result === 'win' ? '🏆' : (record.result === 'draw' ? '🤝' : '❌');
-                let date = new Date(record.time);
-                let dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            for (var ri = 0; ri < Math.min(allRecords.length, 20); ri++) {
+                var record = allRecords[ri];
+                var resultEmoji = record.result === 'win' ? '🏆' : (record.result === 'draw' ? '🤝' : '❌');
+                var date = new Date(record.time);
+                var dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 modalHtml += `
                     <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 0.5px solid #f0f0f0;">
                         <span>${resultEmoji} ${record.gameName} ${record.mode}</span>
@@ -14280,38 +15607,37 @@ function showGameHistoryModal(friendId, friendName) {
                 `;
             }
         }
-        
         modalHtml += `
                 </div>
             </div>
         `;
-        
         return modalHtml;
     }
     
-    let modal = showModal(renderHistory());
+    var modal = showModal(renderHistory());
     
-    // 返回按钮
-    let backBtn = modal.querySelector('#backFromHistory');
+    // ✅ 修复：返回按钮直接回到游戏系统主菜单，不再进入模式选择
+    var backBtn = modal.querySelector('#backFromHistory');
     if (backBtn) {
-        backBtn.onclick = () => {
+        backBtn.onclick = function() {
             modal.remove();
-            // 回到游戏菜单，需要 sessionId，用当前打开的会话
+            // 直接回到游戏系统主菜单
             if (currentOpenSessionId) {
                 showGameSystemModal(currentOpenSessionId);
+            } else {
+                renderMessagesPage();
             }
         };
     }
     
-    // 重置按钮
-    let resetBtn = modal.querySelector('#resetGameHistoryBtn');
+    var resetBtn = modal.querySelector('#resetGameHistoryBtn');
     if (resetBtn) {
-        resetBtn.onclick = () => {
-            if (confirm(`确定要重置与 ${escapeHtml(friendName)} 的所有游戏战绩吗？`)) {
+        resetBtn.onclick = function() {
+            if (confirm('确定要重置所有游戏战绩吗？')) {
                 appData.gameHistory[friendId] = { single: [], double: [] };
                 saveData();
                 modal.remove();
-                showGameHistoryModal(friendId, friendName);
+                showGameHistoryModal(friendId, friendName, game);
                 alert('✅ 战绩已重置');
             }
         };
@@ -17378,32 +18704,54 @@ function createMessageElement(m, session, sessionId, index) {
         '</div>';
     
     var bubble = wrapper.querySelector('.bubble');
-    if (bubble) {
-        var pressTimer = null;
-        var isImage = bubble.getAttribute('data-msg-is-image') === 'true';
-        
-        bubble.addEventListener('touchstart', function(e) {
-            pressTimer = setTimeout(function() {
-                var msgId = bubble.getAttribute('data-msg-id');
-                var msgFrom = bubble.getAttribute('data-msg-from');
-                var msgText = bubble.getAttribute('data-msg-text');
-                showMessageActionMenu(sessionId, msgId, msgFrom, msgText);
-            }, 500);
-        });
-        bubble.addEventListener('touchend', function() { clearTimeout(pressTimer); });
-        bubble.addEventListener('touchmove', function() { clearTimeout(pressTimer); });
-        
-        bubble.addEventListener('mousedown', function(e) {
-            pressTimer = setTimeout(function() {
-                var msgId = bubble.getAttribute('data-msg-id');
-                var msgFrom = bubble.getAttribute('data-msg-from');
-                var msgText = bubble.getAttribute('data-msg-text');
-                showMessageActionMenu(sessionId, msgId, msgFrom, msgText);
-            }, 500);
-        });
-        bubble.addEventListener('mouseup', function() { clearTimeout(pressTimer); });
-        bubble.addEventListener('mouseleave', function() { clearTimeout(pressTimer); });
-    }
+if (bubble) {
+    var pressTimer = null;
+    var isImage = bubble.getAttribute('data-msg-is-image') === 'true';
+    
+    bubble.addEventListener('touchstart', function(e) {
+        pressTimer = setTimeout(function() {
+            var msgId = bubble.getAttribute('data-msg-id');
+            var msgFrom = bubble.getAttribute('data-msg-from');
+            var msgText = bubble.getAttribute('data-msg-text');
+            showMessageActionMenu(sessionId, msgId, msgFrom, msgText);
+        }, 500);
+    });
+    bubble.addEventListener('touchend', function() { clearTimeout(pressTimer); });
+    bubble.addEventListener('touchmove', function() { clearTimeout(pressTimer); });
+    
+    bubble.addEventListener('mousedown', function(e) {
+        pressTimer = setTimeout(function() {
+            var msgId = bubble.getAttribute('data-msg-id');
+            var msgFrom = bubble.getAttribute('data-msg-from');
+            var msgText = bubble.getAttribute('data-msg-text');
+            showMessageActionMenu(sessionId, msgId, msgFrom, msgText);
+        }, 500);
+    });
+    bubble.addEventListener('mouseup', function() { clearTimeout(pressTimer); });
+    bubble.addEventListener('mouseleave', function() { clearTimeout(pressTimer); });
+
+    // ===== 游戏邀请卡片点击事件 =====
+    if (m.extra && m.extra.isGameInvite) {
+    var gameType = m.extra.gameType;
+    var mode = m.extra.mode;
+    var friendId = session.targetId;
+    bubble.style.cursor = 'pointer';
+    bubble.style.border = '2px solid #07c160';
+    bubble.style.background = '#e8f5e9';
+    bubble.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var friend = appData.friends.find(function(f) { return f.id === friendId; });
+        if (!friend) { alert('好友不存在'); return; }
+        var space = getCoupleSpace(friendId);
+        var displayName = (space && space.enabled && space.nickname) ? space.nickname : friend.name;
+        var gameNames = { 'goban': '五子棋', 'monopoly': '大富翁' };
+        sendMessage(sessionId, '我接受了 ' + displayName + ' 的 ' + gameNames[gameType] + ' 邀请！开始吧！', true, null, false);
+        setTimeout(function() {
+            startGame(sessionId, friendId, friend, gameType, mode);
+        }, 400);
+    });
+}
+}
     
     var avatarEl = wrapper.querySelector('.msg-avatar');
     if (avatarEl && session.type === 'friend') {
@@ -18211,9 +19559,13 @@ if (!activeVideoCallContainer) {
             return;
         }
         // 2%概率触发
-        if (Math.random() < 0.02) {
-            maybeIncomingVideoCall(session.sessionId, session.targetId);
-        }
+        // ===== 原有：2% 概率视频邀请 =====
+if (Math.random() < 0.02) {
+    maybeIncomingVideoCall(session.sessionId, session.targetId);
+}
+if (Math.random() < 0.01) {
+    maybeSendGameInvite(session.sessionId, session.targetId);
+}
     }, 15000); // 每15秒检查一次
 
     maybeAddFriendDiary(session.targetId);
