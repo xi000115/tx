@@ -25080,7 +25080,7 @@ function startFriendSurpriseGift(sessionId, friendId) {
     window._surpriseGiftInterval = setInterval(checkAndGift, 60000);
     
     // 测试用 1% 概率触发好友主动购买商品
-if (Math.random() < 1) {
+if (Math.random() < 0.01) {
     friendWantsToBuy(friendId, sessionId);
 }
 }
