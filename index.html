@@ -5441,12 +5441,11 @@ function sendRedPacketFromFriend(sessionId, friendId) {
         time: new Date().toLocaleString()
     });
     
-    // ✅ 新增：我的账户记录收入（红包入账）
-    user.account.balance += msg.amount;
+    user.account.balance += amount;
     user.account.transactions.push({
-        type: 'redpacket_received',
-        amount: msg.amount,
-        label: '收到 ' + (msg.senderName || '对方') + ' 的红包',
+        type: 'income',
+        amount: amount,
+        label: '收到 ' + friend.name + ' 的红包',
         time: new Date().toLocaleString()
     });
     saveData();
@@ -5518,10 +5517,9 @@ function sendTransferFromFriend(sessionId, friendId) {
         time: new Date().toLocaleString()
     });
     
-    // ✅ 新增：我的账户记录收入（转账入账）
     user.account.balance += amount;
     user.account.transactions.push({
-        type: 'transfer_received',
+        type: 'income',
         amount: amount,
         label: '收到 ' + friend.name + ' 的转账',
         time: new Date().toLocaleString()
@@ -5593,10 +5591,22 @@ function manualOpenRedPacket(sessionId, msgId) {
         time: new Date().toLocaleString()
     });
     
+    var friendId = msg.friendId || null;
+    if (friendId) {
+        var friend = appData.friends.find(function(f) { return f.id === friendId; });
+        if (friend && friend.account) {
+            friend.account.transactions.push({
+                type: 'expense',
+                amount: msg.amount,
+                label: '发红包给 ' + user.name,
+                time: new Date().toLocaleString()
+            });
+            saveData();
+        }
+    }
+    
     msg.status = 'opened';
     
-    // ===== 获取对方专属昵称 =====
-    var friendId = msg.friendId || null;
     var senderDisplayName = msg.senderName || '对方';
     if (friendId) {
         var space = getCoupleSpace(friendId);
@@ -5632,7 +5642,7 @@ function manualOpenRedPacket(sessionId, msgId) {
     }
     if (currentPage === 'messages') renderMessagesPage();
     
-    alert('已拆开红包，获得 ¥' + msg.amount.toFixed(2));
+    alert('已拆开红包，获得 ' + msg.amount.toFixed(2));
 }
 
 // ==================== 我手动处理转账（从对方发来的转账） ====================
@@ -5660,7 +5670,6 @@ function manualHandleTransfer(sessionId, msgId, action, callback) {
     var friend = appData.friends.find(function(f) { return f.id === friendId; });
     
     if (action === 'receive') {
-        // 收款
         user.account.balance += msg.amount;
         user.account.transactions.push({
             type: 'income',
@@ -5668,12 +5677,19 @@ function manualHandleTransfer(sessionId, msgId, action, callback) {
             label: '收到 ' + (msg.senderName || '对方') + ' 的转账',
             time: new Date().toLocaleString()
         });
+        if (friend && friend.account) {
+            friend.account.transactions.push({
+                type: 'expense',
+                amount: msg.amount,
+                label: '转账给 ' + user.name,
+                time: new Date().toLocaleString()
+            });
+        }
         msg.status = 'received';
         
-        alert('已收款 ¥' + msg.amount.toFixed(2));
+        alert('已收款 ' + msg.amount.toFixed(2));
         
     } else if (action === 'refund') {
-        // 退回
         if (friend && friend.account) {
             friend.account.balance += msg.amount;
             friend.account.transactions.push({
@@ -5683,12 +5699,17 @@ function manualHandleTransfer(sessionId, msgId, action, callback) {
                 time: new Date().toLocaleString()
             });
         }
+        user.account.transactions.push({
+            type: 'expense',
+            amount: msg.amount,
+            label: '退回转账给 ' + (friend ? friend.name : '对方'),
+            time: new Date().toLocaleString()
+        });
         msg.status = 'refunded';
         
-        alert('已退回 ¥' + msg.amount.toFixed(2) + ' 给 ' + (friend ? friend.name : '对方'));
+        alert('已退回 ' + msg.amount.toFixed(2) + ' 给 ' + (friend ? friend.name : '对方'));
     }
     
-    // 更新会话最后一条消息
     var session = appData.sessions.find(function(s) { return s.sessionId === sessionId; });
     if (session) {
         session.lastMsg = action === 'receive' ? '已收款' : '已退回';
@@ -5697,13 +5718,11 @@ function manualHandleTransfer(sessionId, msgId, action, callback) {
     
     saveData();
     
-    // 刷新当前聊天窗口
     if (currentOpenChatWindow && currentOpenSessionId === sessionId) {
         renderChatMessagesToWindow(currentOpenChatWindow, sessionId);
     }
     if (currentPage === 'messages') renderMessagesPage();
     
-    // ===== ★ 执行回调（插入自己的灰色卡片） =====
     if (typeof callback === 'function') {
         callback();
     }
@@ -11788,6 +11807,51 @@ function clearNewMsgBubble(sessionId) {
     }
 }
 
+function checkAndTriggerChatActivities(sessionId) {
+    var activity = appData.chatActivity[sessionId];
+    if (!activity) return;
+    
+    var count = activity.messageCount;
+    var session = appData.sessions.find(function(s) { return s.sessionId === sessionId; });
+    if (!session || session.type !== 'friend') return;
+    var friendId = session.targetId;
+    var friend = appData.friends.find(function(f) { return f.id === friendId; });
+    if (!friend) return;
+    
+    if (count >= 3 && activity.triggerLevel < 1) {
+        activity.triggerLevel = 1;
+        if (Math.random() < 0.3) {
+            setTimeout(function() {
+                friendWantsToBuy(friendId, sessionId);
+            }, 2000 + Math.random() * 3000);
+        }
+    }
+    
+    if (count >= 5 && activity.triggerLevel < 2) {
+        activity.triggerLevel = 2;
+        if (Math.random() < 0.2) {
+            setTimeout(function() {
+                triggerSurpriseGift(friendId, sessionId);
+            }, 3000 + Math.random() * 4000);
+        }
+    }
+    
+    if (count >= 8 && activity.triggerLevel < 3) {
+        activity.triggerLevel = 3;
+        if (Math.random() < 0.15) {
+            setTimeout(function() {
+                friendWantsToBuyWithPaymentRequest(friendId, sessionId);
+            }, 4000 + Math.random() * 5000);
+        }
+    }
+    
+    if (count >= 2 && Math.random() < 0.05) {
+        setTimeout(function() {
+            sendRedPacketFromFriend(sessionId, friendId);
+        }, 3000 + Math.random() * 3000);
+    }
+}
+
 // ==================== 消息发送核心函数 ====================
 function sendMessage(sessionId, text, fromSelf = true, senderInfo = null, isPat = false, isVote = false, voteData = null, replyTo = null, isQuestionnaire = false, questionnaireId = null, extra = null) {
     // 安全处理 text
@@ -12034,12 +12098,24 @@ if (currentPage === "messages") {
 }
     
     if (fromSelf) {
-        if (idleTimers[sessionId]) {
-            clearTimeout(idleTimers[sessionId]);
-            delete idleTimers[sessionId];
-        }
-        startReplyWithTyping(sessionId);
+    if (idleTimers[sessionId]) {
+        clearTimeout(idleTimers[sessionId]);
+        delete idleTimers[sessionId];
     }
+    startReplyWithTyping(sessionId);
+    
+    if (!appData.chatActivity) appData.chatActivity = {};
+    if (!appData.chatActivity[sessionId]) {
+        appData.chatActivity[sessionId] = {
+            messageCount: 0,
+            lastMessageTime: Date.now(),
+            triggerLevel: 0
+        };
+    }
+    appData.chatActivity[sessionId].messageCount++;
+    appData.chatActivity[sessionId].lastMessageTime = Date.now();
+    checkAndTriggerChatActivities(sessionId);
+}
 }
 
 function renderVoteMessage(voteId, isMine, senderName) {
@@ -23172,6 +23248,19 @@ function autoOpenRedPacket(sessionId, msgId, friendId) {
         time: new Date().toLocaleString()
     });
     
+    var user = appData.user;
+    if (!user.account) {
+        user.account = { balance: 0, transactions: [], cart: [] };
+        saveData();
+    }
+    user.account.transactions.push({
+        type: 'expense',
+        amount: msg.amount,
+        label: '发红包给 ' + friend.name,
+        time: new Date().toLocaleString()
+    });
+    saveData();
+    
     msg.status = 'opened';
     var myMsgs = appData.messages[sessionId];
     if (myMsgs) {
@@ -23243,36 +23332,45 @@ function autoHandleTransfer(sessionId, msgId, friendId) {
         saveData();
     }
     var user = appData.user;
+    if (!user.account) {
+        user.account = { balance: 0, transactions: [], cart: [] };
+        saveData();
+    }
     var friendSessionId = 'chat_f_' + friendId;
     
     var isReceived = Math.random() < 0.5;
     var newStatus = isReceived ? 'received' : 'refunded';
     
     if (isReceived) {
-        // ✅ 修改：对方收到转账 → 对方账户记录 transfer_received
         friend.account.balance += msg.amount;
         friend.account.transactions.push({
-            type: 'transfer_received',
+            type: 'income',
             amount: msg.amount,
             label: '收到 ' + user.name + ' 的转账',
             time: new Date().toLocaleString()
         });
+        user.account.transactions.push({
+            type: 'expense',
+            amount: msg.amount,
+            label: '转账给 ' + friend.name,
+            time: new Date().toLocaleString()
+        });
     } else {
-        // ✅ 修改：我收到退款 → 我的账户记录 transfer_refund
-        if (!user.account) {
-            user.account = { balance: 0, transactions: [], cart: [] };
-            saveData();
-        }
         user.account.balance += msg.amount;
         user.account.transactions.push({
-            type: 'transfer_refund',
+            type: 'income',
             amount: msg.amount,
             label: '转账退回（' + friend.name + ' 已退回）',
             time: new Date().toLocaleString()
         });
+        friend.account.transactions.push({
+            type: 'expense',
+            amount: msg.amount,
+            label: '退回转账给 ' + user.name,
+            time: new Date().toLocaleString()
+        });
     }
     
-    // 更新我的消息状态（发送方）
     msg.status = newStatus;
     var myMsgs = appData.messages[sessionId];
     if (myMsgs) {
@@ -23284,7 +23382,6 @@ function autoHandleTransfer(sessionId, msgId, friendId) {
         }
     }
     
-    // 同步更新对方聊天记录中的同一条消息
     if (appData.messages[friendSessionId]) {
         var friendMsgs = appData.messages[friendSessionId];
         for (var j = 0; j < friendMsgs.length; j++) {
@@ -23295,34 +23392,31 @@ function autoHandleTransfer(sessionId, msgId, friendId) {
         }
     }
     
-    // ===== ★★★ 系统在当前聊天页面发一条"假装是对方发出的"灰色卡片 ★★★ =====
 var displayName = friend ? friend.name : '对方';
 var space2 = getCoupleSpace(friendId);
 if (space2 && space2.enabled && space2.nickname) {
     displayName = space2.nickname;
 }
-var statusText = isReceived ? '已收款 ✅' : '已退回 ↩️';
+var statusText = isReceived ? '已收款 ' : '已退回 ';
 var grayCard = {
     id: 'gray_card_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
-    type: 'transfer',              // 和转账卡片同一个类型
-    from: 'other',                 // ★★★ 假装是对方发的 ★★★
-    status: newStatus,             // 'received' 或 'refunded'
+    type: 'transfer',
+    from: 'other',
+    status: newStatus,
     amount: msg.amount,
     time: new Date().toLocaleString(),
     timestamp: Date.now(),
     read: true,
     readByReceiver: true,
     isPat: false,
-    isSystem: false,               // ★★★ 不是系统消息，假装是对方发的 ★★★
+    isSystem: false,
     isRecall: false,
     friendId: friendId,
     senderName: displayName,
     senderId: friendId,
-    // 标记这是一张灰色状态卡片
     isGrayCard: true
 };
 
-// ★★★ 插入到当前聊天记录（不是对方那边） ★★★
 if (!appData.messages[sessionId]) {
     appData.messages[sessionId] = [];
 }
@@ -23378,9 +23472,17 @@ function showTransferActionModal(sessionId, msgId) {
             label: '收到 ' + (msg.senderName || '对方') + ' 的转账',
             time: new Date().toLocaleString()
         });
+        var friend = appData.friends.find(function(f) { return f.id === friendId; });
+        if (friend && friend.account) {
+            friend.account.transactions.push({
+                type: 'expense',
+                amount: msg.amount,
+                label: '转账给 ' + user.name,
+                time: new Date().toLocaleString()
+            });
+        }
         msg.status = 'received';
         
-        // 更新我自己的聊天记录中的转账状态
         var myMsgs = appData.messages[sessionId];
         if (myMsgs) {
             for (var k = 0; k < myMsgs.length; k++) {
@@ -23391,7 +23493,6 @@ function showTransferActionModal(sessionId, msgId) {
             }
         }
         
-        // 同步更新对方聊天记录中的同一条消息
         if (friendId) {
             var friendSessionId = 'chat_f_' + friendId;
             if (appData.messages[friendSessionId]) {
@@ -23405,10 +23506,9 @@ function showTransferActionModal(sessionId, msgId) {
             }
         }
         
-        // ===== 系统消息发到对方那边（接收方） =====
         var systemMsg = {
             id: 'sys_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
-            text: '已收款 ✅',
+            text: '已收款 ',
             time: new Date().toLocaleString(),
             from: 'system',
             timestamp: Date.now(),
@@ -23430,7 +23530,7 @@ function showTransferActionModal(sessionId, msgId) {
             renderChatMessagesToWindow(currentOpenChatWindow, sessionId);
         }
         if (currentPage === 'messages') renderMessagesPage();
-        alert('已收款，¥' + msg.amount.toFixed(2) + ' 已入账！');
+        alert('已收款，' + msg.amount.toFixed(2) + ' 已入账！');
     };
 }
     if (refundBtn) {
@@ -23441,10 +23541,16 @@ function showTransferActionModal(sessionId, msgId) {
                 friend.account.transactions.push({
                     type: 'income',
                     amount: msg.amount,
-                    label: '转账退回（' + (msg.senderName || '对方') + ' 已退回）',
+                    label: '转账退回（' + user.name + ' 已退回）',
                     time: new Date().toLocaleString()
                 });
             }
+            user.account.transactions.push({
+                type: 'expense',
+                amount: msg.amount,
+                label: '退回转账给 ' + (friend ? friend.name : '对方'),
+                time: new Date().toLocaleString()
+            });
             msg.status = 'refunded';
             var friend2 = appData.friends.find(function(f) { return f.id === friendId; });
 var displayName = friend2 ? friend2.name : (msg.senderName || '对方');
@@ -23479,7 +23585,7 @@ appData.messages[sessionId].push(systemMsg);
                     }
                     var friendSystemMsg = {
                         id: 'sys_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
-                        text: (msg.senderName || '对方') + ' 已退回你的转账 ¥' + msg.amount.toFixed(2),
+                        text: (msg.senderName || '对方') + ' 已退回你的转账 ' + msg.amount.toFixed(2),
                         time: new Date().toLocaleString(),
                         from: 'system',
                         timestamp: Date.now(),
@@ -23497,7 +23603,7 @@ appData.messages[sessionId].push(systemMsg);
                 renderChatMessagesToWindow(currentOpenChatWindow, sessionId);
             }
             if (currentPage === 'messages') renderMessagesPage();
-            alert('已退回，¥' + msg.amount.toFixed(2) + ' 已退回对方账户');
+            alert('已退回，' + msg.amount.toFixed(2) + ' 已退回对方账户');
         };
     }
 }
@@ -23774,11 +23880,20 @@ function showSendTransferModal(sessionId, friendId) {
                 return;
             }
             user.account.balance -= amount;
-            // ✅ 修改：支出类型改为 transfer_sent，方便流水筛选
             user.account.transactions.push({
                 type: 'transfer_sent',
                 amount: amount,
                 label: '转账给 ' + friend.name,
+                time: new Date().toLocaleString()
+            });
+            if (!friend.account) {
+                friend.account = { balance: 1000, transactions: [], cart: [] };
+                saveData();
+            }
+            friend.account.transactions.push({
+                type: 'income',
+                amount: amount,
+                label: '收到 ' + user.name + ' 的转账',
                 time: new Date().toLocaleString()
             });
             saveData();
@@ -23816,6 +23931,40 @@ function showSendTransferModal(sessionId, friendId) {
     if (cancelBtn) {
         cancelBtn.onclick = function() { modal.remove(); };
     }
+}
+
+function recordRedPacketIncomeForFriend(friendId, amount, senderName) {
+    var friend = appData.friends.find(function(f) { return f.id === friendId; });
+    if (!friend) return;
+    if (!friend.account) {
+        friend.account = { balance: 1000, transactions: [], cart: [] };
+        saveData();
+    }
+    friend.account.balance += amount;
+    friend.account.transactions.push({
+        type: 'income',
+        amount: amount,
+        label: '收到 ' + senderName + ' 的红包',
+        time: new Date().toLocaleString()
+    });
+    saveData();
+}
+
+function recordTransferIncomeForFriend(friendId, amount, senderName) {
+    var friend = appData.friends.find(function(f) { return f.id === friendId; });
+    if (!friend) return;
+    if (!friend.account) {
+        friend.account = { balance: 1000, transactions: [], cart: [] };
+        saveData();
+    }
+    friend.account.balance += amount;
+    friend.account.transactions.push({
+        type: 'income',
+        amount: amount,
+        label: '收到 ' + senderName + ' 的转账',
+        time: new Date().toLocaleString()
+    });
+    saveData();
 }
 
 // ==================== 发红包弹窗 ====================
@@ -23864,11 +24013,20 @@ function showSendRedPacketModal(sessionId, friendId) {
             }
             var blessing = blessingInput.value.trim() || '恭喜发财';
             user.account.balance -= amount;
-            // ✅ 修改：支出类型改为 redpacket_sent，方便流水筛选
             user.account.transactions.push({
                 type: 'redpacket_sent',
                 amount: amount,
                 label: '发红包给 ' + friend.name,
+                time: new Date().toLocaleString()
+            });
+            if (!friend.account) {
+                friend.account = { balance: 1000, transactions: [], cart: [] };
+                saveData();
+            }
+            friend.account.transactions.push({
+                type: 'income',
+                amount: amount,
+                label: '收到 ' + user.name + ' 的红包',
                 time: new Date().toLocaleString()
             });
             saveData();
@@ -24427,6 +24585,126 @@ if (containerMsg) {
     
     setTimeout(checkAndBrowse, 5000 + Math.random() * 10000);
     window._friendBrowseInterval = setInterval(checkAndBrowse, 60000);
+}
+
+function triggerSurpriseGift(friendId, sessionId) {
+    var friend = appData.friends.find(function(f) { return f.id === friendId; });
+    if (!friend) return;
+    
+    var allItems = [];
+    var categories = appData.mall.categories || {};
+    for (var catKey in categories) {
+        if (categories.hasOwnProperty(catKey)) {
+            var items = categories[catKey].items || [];
+            for (var i = 0; i < items.length; i++) {
+                allItems.push({ item: items[i], category: catKey });
+            }
+        }
+    }
+    
+    if (allItems.length === 0) return;
+    var randomIndex = Math.floor(Math.random() * allItems.length);
+    var selected = allItems[randomIndex];
+    var price = selected.item.price || 0;
+    
+    var space = getCoupleSpace(friendId);
+    var displayName = friend.name;
+    if (space && space.enabled && space.nickname) {
+        displayName = space.nickname;
+    }
+    
+    var paid = false;
+    if (space && space.coinJar && space.coinJar.balance >= price) {
+        space.coinJar.balance -= price;
+        space.coinJar.transactions.push({
+            type: 'expense',
+            amount: price,
+            label: '惊喜礼物：' + selected.item.name,
+            time: new Date().toLocaleString()
+        });
+        paid = true;
+    } else if (friend.account && friend.account.balance >= price) {
+        friend.account.balance -= price;
+        friend.account.transactions.push({
+            type: 'expense',
+            amount: price,
+            label: '惊喜礼物：' + selected.item.name,
+            time: new Date().toLocaleString()
+        });
+        paid = true;
+    }
+    
+    if (paid) {
+        if (!friend.account.surpriseGifts) friend.account.surpriseGifts = [];
+        friend.account.surpriseGifts.push({
+            name: selected.item.name,
+            price: price,
+            icon: selected.item.icon || '',
+            source: '他给我买的',
+            time: new Date().toLocaleString()
+        });
+        saveData();
+        
+        var giftMsg = displayName + ' 给你买了 ' + selected.item.name + ' (¥' + price.toFixed(2) + ')';
+        sendMessage(sessionId, giftMsg, false, {
+            id: friendId,
+            name: friend.name,
+            avatar: friend.avatar
+        }, false);
+    }
+}
+
+function friendWantsToBuyWithPaymentRequest(friendId, sessionId) {
+    var mallItems = getAllMallItems();
+    if (mallItems.length === 0) return;
+    
+    var randomIndex = Math.floor(Math.random() * mallItems.length);
+    var item = mallItems[randomIndex];
+    var price = item.price || 0;
+    var itemName = item.name || '商品';
+    
+    var friend = appData.friends.find(function(f) { return f.id === friendId; });
+    if (!friend) return;
+    
+    var space = getCoupleSpace(friendId);
+    var nickname = (space && space.enabled && space.nickname) ? space.nickname : friend.name;
+    var myNickname = appData.myNickname || '宝宝';
+    
+    var msgId = 'pay_req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+    var cardData = {
+        id: msgId,
+        type: 'payment_request',
+        from: 'other',
+        itemName: itemName,
+        price: price,
+        friendId: friendId,
+        status: 'pending',
+        time: new Date().toLocaleString(),
+        timestamp: Date.now(),
+        senderId: friendId,
+        senderName: friend.name,
+        read: false,
+        readByReceiver: false,
+        isPat: false,
+        isSystem: false,
+        isRecall: false,
+        isFromFriend: true
+    };
+    
+    if (!appData.messages[sessionId]) appData.messages[sessionId] = [];
+    appData.messages[sessionId].push(cardData);
+    
+    var session = appData.sessions.find(function(s) { return s.sessionId === sessionId; });
+    if (session) {
+        session.lastMsg = '帮我付钱';
+        session.lastTime = new Date().toLocaleString();
+        session.unread = (session.unread || 0) + 1;
+    }
+    saveData();
+    
+    if (currentOpenChatWindow && currentOpenSessionId === sessionId) {
+        renderChatMessagesToWindow(currentOpenChatWindow, sessionId);
+    }
 }
 
 // ===== 新增：好友主动购买商品 =====
@@ -25115,9 +25393,6 @@ if (Math.random() < 0.01) {
     window._redPacketInterval = setInterval(checkAndSend, 300000 + Math.random() * 300000);
 }
 
-    startAutoRedPacketAndTransfer(session.sessionId, session.targetId);
-startFriendAutoBrowse(session.sessionId, session.targetId);
-startFriendSurpriseGift(session.sessionId, session.targetId);
 }
     
     let backBtn = chatWin.querySelector(".back-btn");
@@ -32490,7 +32765,7 @@ function generateRandomQuestionnaire(sessionId, friendId) {
     }
     
     // 随机标题
-    var titles = ['日常小问卷 📋', '心情小测试 💭', '随便聊聊 ✨', '趣味问答 🎯', '了解一下 🌸', '随机问答 🤔', '默契大考验 💕', '真心话 📝', '好奇一下 👀', '随便问问 🧐'];
+    var titles = ['日常小问卷', '心情小测试', '我想知道', '趣味问答', '了解一下', '随机问答', '默契大考验', '真心话', '好奇一下', '随便问问'];
     var title = titles[Math.floor(Math.random() * titles.length)];
     
     // 构建问卷（标记为对方发来的）
