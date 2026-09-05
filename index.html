@@ -4099,11 +4099,9 @@ function runInitialReminderCheck() {
 }
 
 function loadData() {
-    // 从 IndexedDB 加载数据
     loadDataFromDB().then(function(saved) {
         if (saved) {
             try {
-                // ===== 数据完整性校验 =====
                 if (!saved.user || !saved.friends || !saved.messages) {
                     console.warn("数据不完整，尝试修复...");
                     if (!saved.user) saved.user = { id: "self", name: "诗远", avatar: "🌙", tags: "浪漫主义者", mood: "自在", weather: "晴" };
@@ -4113,15 +4111,11 @@ function loadData() {
                     if (!saved.sessions) saved.sessions = [];
                     saveData();
                 }
-                
-                // 保留用户已有数据，只补全缺失字段
                 for (var key in saved) {
                     if (saved.hasOwnProperty(key)) {
                         appData[key] = saved[key];
                     }
                 }
-                
-                // ===== 补全所有可能缺失的字段 =====
                 if (!appData.friends) appData.friends = [];
                 if (!appData.groups) appData.groups = [];
                 if (!appData.messages) appData.messages = {};
@@ -4136,8 +4130,6 @@ function loadData() {
                 if (!appData.questionnaires) appData.questionnaires = {};
                 if (!appData.calendarEvents) appData.calendarEvents = {};
                 if (!appData.friendStatusCalendars) appData.friendStatusCalendars = {};
-                
-                // ===== questionBank 初始化 =====
                 if (!appData.questionBank || typeof appData.questionBank !== 'object') {
                     appData.questionBank = {
     "日常": [],
@@ -4146,7 +4138,6 @@ function loadData() {
     "工作": [],
     "其他": []
 };
-// 排序题：不需要额外初始化，与单选题共用同一个数据结构（type: 'sort'）
                 }
                 var defaultQBCategories = ["日常", "情感", "生活", "工作", "其他"];
                 for (var ci = 0; ci < defaultQBCategories.length; ci++) {
@@ -4160,13 +4151,11 @@ function loadData() {
                         appData.questionBank[cat2] = appData.questionBank[cat2].filter(function(q) { return q && q.text && q.text.trim(); });
                     }
                 }
-                
                 if (!appData.friendChatSettings) appData.friendChatSettings = {};
                 if (!appData.friendProfilePopupDate) appData.friendProfilePopupDate = {};
                 if (!appData.friendDiaryRedDot) appData.friendDiaryRedDot = {};
                 if (!appData.friendMomentRedDot) appData.friendMomentRedDot = {};
                 if (!appData.friendLetterRedDot) appData.friendLetterRedDot = {};
-                
                 if (!appData.user) {
     appData.user = { id: "self", name: "诗远", avatar: "🌙", tags: "浪漫主义者", mood: "自在", weather: "晴" };
 } else {
@@ -4176,12 +4165,9 @@ function loadData() {
     if (!appData.user.tags) appData.user.tags = "浪漫主义者";
     if (!appData.user.name) appData.user.name = "诗远";
 }
-
 if (appData.myNickname === undefined) {
     appData.myNickname = "宝宝";
 }
-
-                // ===== chatSettings 补全 =====
                 if (!appData.chatSettings) {
                     appData.chatSettings = {
                         typingIndicator: true,
@@ -4211,8 +4197,6 @@ if (appData.myNickname === undefined) {
                     if (appData.chatSettings.videoCallProb === undefined) appData.chatSettings.videoCallProb = 2;
                     if (appData.chatSettings.replyWithQuoteProb === undefined) appData.chatSettings.replyWithQuoteProb = 40;
                 }
-
-                // ===== globalTheme 补全 =====
                 if (!appData.globalTheme) {
                     appData.globalTheme = {
                         bgColor: "#ffffff",
@@ -4233,8 +4217,6 @@ if (appData.myNickname === undefined) {
                     if (appData.globalTheme.headerBgColor === undefined) appData.globalTheme.headerBgColor = "rgba(255,255,255,1)";
                     if (appData.globalTheme.tabbarBgColor === undefined) appData.globalTheme.tabbarBgColor = "rgba(255,255,255,1)";
                 }
-
-                // ===== coupleImageCSS 数据兼容 =====
                 if (!appData.coupleImageCSS) {
                     appData.coupleImageCSS = {};
                 }
@@ -4259,23 +4241,14 @@ if (appData.myNickname === undefined) {
                         }
                     }
                 }
-
             } catch (e) {
                 console.error("加载数据失败", e);
-                alert("⚠️ 数据加载失败，可能已损坏。\n\n" +
-                      "建议：\n" +
-                      "1. 如果有备份，点击「确定」后导入备份\n" +
-                      "2. 如果没有备份，可尝试重新初始化（数据将丢失）\n\n" +
-                      "点击「确定」继续使用默认数据");
-                initDefaultData();
+                alert("⚠️ 数据加载失败，可能已损坏。\n\n建议：\n1. 如果有备份，点击「确定」后导入备份\n2. 如果没有备份，可尝试重新初始化（数据将丢失）\n\n点击「确定」继续使用默认数据");
                 saveData();
             }
         } else {
-            // 首次使用，初始化默认数据
             initDefaultData();
         }
-        
-        // ===== 初始化公共词条库 =====
         if (!appData.lexicon) {
             appData.lexicon = {};
         }
@@ -4300,8 +4273,6 @@ if (appData.myNickname === undefined) {
                 appData.lexicon.public[cat]["默认"] = [];
             }
         }
-
-        // ===== 头像框初始化 =====
         if (!appData.avatarFrames) {
             appData.avatarFrames = {
                 library: [
@@ -4318,8 +4289,6 @@ if (appData.myNickname === undefined) {
             appData.avatarFrames.default = 'frame_default';
         }
         if (!appData.avatarFrames.sessions) appData.avatarFrames.sessions = {};
-
-        // ===== 气泡初始化 =====
         if (!appData.chatBubbles) {
             appData.chatBubbles = {
                 library: [
@@ -4336,16 +4305,12 @@ if (appData.myNickname === undefined) {
             appData.chatBubbles.default = 'bubble_default';
         }
         if (!appData.chatBubbles.sessions) appData.chatBubbles.sessions = {};
-
-        // ===== 清理无效数据 =====
         appData.diaryEntries = (appData.diaryEntries || []).filter(function(d) { return d.content && !d.content.startsWith("data:image"); });
         for (var f in appData.friendDiaries) {
             if (appData.friendDiaries.hasOwnProperty(f)) {
                 appData.friendDiaries[f] = (appData.friendDiaries[f] || []).filter(function(d) { return d.content && !d.content.startsWith("data:image"); });
             }
         }
-
-        // ===== 初始化好友相关数据 =====
         if (appData.friends) {
             for (var fi = 0; fi < appData.friends.length; fi++) {
                 var f = appData.friends[fi];
@@ -4374,7 +4339,6 @@ if (appData.myNickname === undefined) {
         }
     };
 } else {
-    // 补全 recall 字段（兼容旧数据）
     if (!appData.friendChatSettings[f.id].recall) {
         appData.friendChatSettings[f.id].recall = {
             enabled: true,
@@ -4397,17 +4361,14 @@ if (appData.myNickname === undefined) {
                 if (!appData.letters[f.id]) appData.letters[f.id] = [];
             }
         }
-
         restoreVoteTimers();
         buildSessionsFromData();
         startLetterCheckLoop();
         checkPendingQuestionnaires();
         applyGlobalTheme();
-        
     }).catch(function(err) {
         console.error('从 IndexedDB 加载失败:', err);
         alert('⚠️ 数据加载失败，将使用默认数据。\n\n错误信息: ' + err.message);
-        initDefaultData();
         restoreVoteTimers();
         buildSessionsFromData();
         startLetterCheckLoop();
