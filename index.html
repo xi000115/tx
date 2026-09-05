@@ -4102,23 +4102,28 @@ function loadData() {
     loadDataFromDB().then(function(saved) {
         if (saved) {
             try {
-                if (!saved.user || !saved.friends || !saved.messages) {
-                    console.warn("数据不完整，尝试修复...");
-                    if (!saved.user) saved.user = { id: "self", name: "诗远", avatar: "🌙", tags: "浪漫主义者", mood: "自在", weather: "晴" };
-                    if (!saved.friends) saved.friends = [];
-                    if (!saved.messages) saved.messages = {};
-                    if (!saved.groups) saved.groups = [];
-                    if (!saved.sessions) saved.sessions = [];
-                    saveData();
-                }
+                // ===== 1. 合并保存的数据，保留已有字段 =====
                 for (var key in saved) {
                     if (saved.hasOwnProperty(key)) {
                         appData[key] = saved[key];
                     }
                 }
+                
+                // ===== 2. 补全缺失字段（绝不覆盖已有数据） =====
+                if (!appData.user) {
+                    appData.user = { id: "self", name: "诗远", avatar: "🌙", tags: "浪漫主义者", mood: "自在", weather: "晴" };
+                } else {
+                    if (!appData.user.avatar) appData.user.avatar = "🌙";
+                    if (!appData.user.mood) appData.user.mood = "自在";
+                    if (!appData.user.weather) appData.user.weather = "晴";
+                    if (!appData.user.tags) appData.user.tags = "浪漫主义者";
+                    if (!appData.user.name) appData.user.name = "诗远";
+                }
+                
                 if (!appData.friends) appData.friends = [];
                 if (!appData.groups) appData.groups = [];
                 if (!appData.messages) appData.messages = {};
+                if (!appData.sessions) appData.sessions = [];
                 if (!appData.moments) appData.moments = [];
                 if (!appData.diaryEntries) appData.diaryEntries = [];
                 if (!appData.memoryEvents) appData.memoryEvents = [];
@@ -4130,14 +4135,42 @@ function loadData() {
                 if (!appData.questionnaires) appData.questionnaires = {};
                 if (!appData.calendarEvents) appData.calendarEvents = {};
                 if (!appData.friendStatusCalendars) appData.friendStatusCalendars = {};
+                if (!appData.friendChatSettings) appData.friendChatSettings = {};
+                if (!appData.friendProfilePopupDate) appData.friendProfilePopupDate = {};
+                if (!appData.friendDiaryRedDot) appData.friendDiaryRedDot = {};
+                if (!appData.friendMomentRedDot) appData.friendMomentRedDot = {};
+                if (!appData.friendLetterRedDot) appData.friendLetterRedDot = {};
+                if (!appData.coupleSpaces) appData.coupleSpaces = {};
+                if (!appData.coupleMemories) appData.coupleMemories = {};
+                if (!appData.coupleImageCSS) appData.coupleImageCSS = {};
+                if (!appData.chatThemes) appData.chatThemes = {};
+                if (appData.myNickname === undefined) {
+                    appData.myNickname = "宝宝";
+                }
+                
+                // ===== 3. 词条库：仅补全缺失的分类，不覆盖已有数据 =====
+                if (!appData.lexicon) {
+                    appData.lexicon = {};
+                }
+                if (!appData.lexicon.public) {
+                    appData.lexicon.public = {};
+                }
+                var categories = ["wordCards", "emojis", "kaomojis", "emoji", "patPat", "weather", "status"];
+                for (var ci = 0; ci < categories.length; ci++) {
+                    var cat = categories[ci];
+                    if (!appData.lexicon.public[cat]) {
+                        appData.lexicon.public[cat] = { "默认": [] };
+                    }
+                    if (!appData.lexicon.public[cat]["默认"]) {
+                        appData.lexicon.public[cat]["默认"] = [];
+                    }
+                }
+                
+                // ===== 4. 问卷题库 =====
                 if (!appData.questionBank || typeof appData.questionBank !== 'object') {
                     appData.questionBank = {
-    "日常": [],
-    "情感": [],
-    "生活": [],
-    "工作": [],
-    "其他": []
-};
+                        "日常": [], "情感": [], "生活": [], "工作": [], "其他": []
+                    };
                 }
                 var defaultQBCategories = ["日常", "情感", "生活", "工作", "其他"];
                 for (var ci = 0; ci < defaultQBCategories.length; ci++) {
@@ -4146,28 +4179,14 @@ function loadData() {
                         appData.questionBank[cat] = [];
                     }
                 }
+                // 清理无效条目
                 for (var cat2 in appData.questionBank) {
                     if (appData.questionBank.hasOwnProperty(cat2) && Array.isArray(appData.questionBank[cat2])) {
                         appData.questionBank[cat2] = appData.questionBank[cat2].filter(function(q) { return q && q.text && q.text.trim(); });
                     }
                 }
-                if (!appData.friendChatSettings) appData.friendChatSettings = {};
-                if (!appData.friendProfilePopupDate) appData.friendProfilePopupDate = {};
-                if (!appData.friendDiaryRedDot) appData.friendDiaryRedDot = {};
-                if (!appData.friendMomentRedDot) appData.friendMomentRedDot = {};
-                if (!appData.friendLetterRedDot) appData.friendLetterRedDot = {};
-                if (!appData.user) {
-    appData.user = { id: "self", name: "诗远", avatar: "🌙", tags: "浪漫主义者", mood: "自在", weather: "晴" };
-} else {
-    if (!appData.user.avatar) appData.user.avatar = "🌙";
-    if (!appData.user.mood) appData.user.mood = "自在";
-    if (!appData.user.weather) appData.user.weather = "晴";
-    if (!appData.user.tags) appData.user.tags = "浪漫主义者";
-    if (!appData.user.name) appData.user.name = "诗远";
-}
-if (appData.myNickname === undefined) {
-    appData.myNickname = "宝宝";
-}
+                
+                // ===== 5. 聊天设置 =====
                 if (!appData.chatSettings) {
                     appData.chatSettings = {
                         typingIndicator: true,
@@ -4197,6 +4216,8 @@ if (appData.myNickname === undefined) {
                     if (appData.chatSettings.videoCallProb === undefined) appData.chatSettings.videoCallProb = 2;
                     if (appData.chatSettings.replyWithQuoteProb === undefined) appData.chatSettings.replyWithQuoteProb = 40;
                 }
+                
+                // ===== 6. 全局主题 =====
                 if (!appData.globalTheme) {
                     appData.globalTheme = {
                         bgColor: "#ffffff",
@@ -4217,6 +4238,116 @@ if (appData.myNickname === undefined) {
                     if (appData.globalTheme.headerBgColor === undefined) appData.globalTheme.headerBgColor = "rgba(255,255,255,1)";
                     if (appData.globalTheme.tabbarBgColor === undefined) appData.globalTheme.tabbarBgColor = "rgba(255,255,255,1)";
                 }
+                
+                // ===== 7. 头像框 =====
+                if (!appData.avatarFrames) {
+                    appData.avatarFrames = {
+                        library: [
+                            { id: 'frame_default', name: '默认', css: '', template: '' }
+                        ],
+                        default: 'frame_default',
+                        sessions: {}
+                    };
+                }
+                if (!appData.avatarFrames.library || appData.avatarFrames.library.length === 0) {
+                    appData.avatarFrames.library = [
+                        { id: 'frame_default', name: '默认', css: '', template: '' }
+                    ];
+                    appData.avatarFrames.default = 'frame_default';
+                }
+                if (!appData.avatarFrames.sessions) appData.avatarFrames.sessions = {};
+                
+                // ===== 8. 气泡 =====
+                if (!appData.chatBubbles) {
+                    appData.chatBubbles = {
+                        library: [
+                            { id: 'bubble_default', name: '默认', css: '' }
+                        ],
+                        default: 'bubble_default',
+                        sessions: {}
+                    };
+                }
+                if (!appData.chatBubbles.library || appData.chatBubbles.library.length === 0) {
+                    appData.chatBubbles.library = [
+                        { id: 'bubble_default', name: '默认', css: '' }
+                    ];
+                    appData.chatBubbles.default = 'bubble_default';
+                }
+                if (!appData.chatBubbles.sessions) appData.chatBubbles.sessions = {};
+                
+                // ===== 9. 清理无效的图片日记（过滤掉空内容） =====
+                appData.diaryEntries = (appData.diaryEntries || []).filter(function(d) { return d.content && !d.content.startsWith("data:image"); });
+                for (var f in appData.friendDiaries) {
+                    if (appData.friendDiaries.hasOwnProperty(f)) {
+                        appData.friendDiaries[f] = (appData.friendDiaries[f] || []).filter(function(d) { return d.content && !d.content.startsWith("data:image"); });
+                    }
+                }
+                
+                // ===== 10. 补全好友数据 =====
+                if (appData.friends) {
+                    for (var fi = 0; fi < appData.friends.length; fi++) {
+                        var f = appData.friends[fi];
+                        if (!f.account) {
+                            f.account = { balance: 1000, transactions: [], cart: [], favorites: [], monthlyStats: {}, surpriseGifts: [], shoppingDiary: [] };
+                        }
+                        if (!appData.privateLexicon[f.id]) {
+                            appData.privateLexicon[f.id] = {
+                                wordCards: { "默认": [] },
+                                emojis: { "默认": [] },
+                                kaomojis: { "默认": [] },
+                                emoji: { "默认": [] },
+                                patPat: { "默认": [] },
+                                weather: { "默认": [] },
+                                status: { "默认": [] }
+                            };
+                        }
+                        if (!appData.friendChatSettings[f.id]) {
+                            appData.friendChatSettings[f.id] = {
+                                myPatSymbol: "🤍",
+                                otherPatSymbol: "🤍",
+                                patProbability: 30,
+                                recall: {
+                                    enabled: true,
+                                    recallText: '已撤回',
+                                    otherRecallText: '对方撤回了',
+                                    timeLimit: 120,
+                                    otherRecallProbability: 1
+                                }
+                            };
+                        } else {
+                            if (!appData.friendChatSettings[f.id].recall) {
+                                appData.friendChatSettings[f.id].recall = {
+                                    enabled: true,
+                                    recallText: '已撤回',
+                                    otherRecallText: '对方撤回了',
+                                    timeLimit: 120,
+                                    otherRecallProbability: 1
+                                };
+                            } else {
+                                var r = appData.friendChatSettings[f.id].recall;
+                                if (r.enabled === undefined) r.enabled = true;
+                                if (r.recallText === undefined) r.recallText = '已撤回';
+                                if (r.otherRecallText === undefined) r.otherRecallText = '对方撤回了';
+                                if (r.timeLimit === undefined) r.timeLimit = 120;
+                                if (r.otherRecallProbability === undefined) r.otherRecallProbability = 1;
+                            }
+                        }
+                        if (!appData.friendMoments[f.id]) appData.friendMoments[f.id] = [];
+                        if (!appData.friendDiaries[f.id]) appData.friendDiaries[f.id] = [];
+                        if (!appData.letters[f.id]) appData.letters[f.id] = [];
+                    }
+                }
+                
+                // ===== 11. 补全群聊 =====
+                if (appData.groups) {
+                    for (var gi = 0; gi < appData.groups.length; gi++) {
+                        var g = appData.groups[gi];
+                        if (!g.avatar) g.avatar = "群";
+                        if (!g.members) g.members = ["self"];
+                    }
+                }
+                
+                // ===== 12. 补全情侣空间图片样式 =====
                 if (!appData.coupleImageCSS) {
                     appData.coupleImageCSS = {};
                 }
@@ -4241,134 +4372,30 @@ if (appData.myNickname === undefined) {
                         }
                     }
                 }
+                
+                console.log('✅ 数据加载成功，共 ' + Object.keys(appData.messages).length + ' 个会话');
+                
             } catch (e) {
                 console.error("加载数据失败", e);
                 alert("⚠️ 数据加载失败，可能已损坏。\n\n建议：\n1. 如果有备份，点击「确定」后导入备份\n2. 如果没有备份，可尝试重新初始化（数据将丢失）\n\n点击「确定」继续使用默认数据");
-                saveData();
+                initDefaultData();
             }
         } else {
+            // IndexedDB 中没有数据 → 初始化默认数据
             initDefaultData();
         }
-        if (!appData.lexicon) {
-            appData.lexicon = {};
-        }
-        if (!appData.lexicon.public) {
-            appData.lexicon.public = {
-                wordCards: { "默认": [] },
-                emojis: { "默认": [] },
-                kaomojis: { "默认": [] },
-                emoji: { "默认": [] },
-                patPat: { "默认": [] },
-                weather: { "默认": [] },
-                status: { "默认": [] }
-            };
-        }
-        var categories = ["wordCards", "emojis", "kaomojis", "emoji", "patPat", "weather", "status"];
-        for (var ci = 0; ci < categories.length; ci++) {
-            var cat = categories[ci];
-            if (!appData.lexicon.public[cat]) {
-                appData.lexicon.public[cat] = { "默认": [] };
-            }
-            if (!appData.lexicon.public[cat]["默认"]) {
-                appData.lexicon.public[cat]["默认"] = [];
-            }
-        }
-        if (!appData.avatarFrames) {
-            appData.avatarFrames = {
-                library: [
-                    { id: 'frame_default', name: '默认', css: '', template: '' }
-                ],
-                default: 'frame_default',
-                sessions: {}
-            };
-        }
-        if (!appData.avatarFrames.library || appData.avatarFrames.library.length === 0) {
-            appData.avatarFrames.library = [
-                { id: 'frame_default', name: '默认', css: '', template: '' }
-            ];
-            appData.avatarFrames.default = 'frame_default';
-        }
-        if (!appData.avatarFrames.sessions) appData.avatarFrames.sessions = {};
-        if (!appData.chatBubbles) {
-            appData.chatBubbles = {
-                library: [
-                    { id: 'bubble_default', name: '默认', css: '' }
-                ],
-                default: 'bubble_default',
-                sessions: {}
-            };
-        }
-        if (!appData.chatBubbles.library || appData.chatBubbles.library.length === 0) {
-            appData.chatBubbles.library = [
-                { id: 'bubble_default', name: '默认', css: '' }
-            ];
-            appData.chatBubbles.default = 'bubble_default';
-        }
-        if (!appData.chatBubbles.sessions) appData.chatBubbles.sessions = {};
-        appData.diaryEntries = (appData.diaryEntries || []).filter(function(d) { return d.content && !d.content.startsWith("data:image"); });
-        for (var f in appData.friendDiaries) {
-            if (appData.friendDiaries.hasOwnProperty(f)) {
-                appData.friendDiaries[f] = (appData.friendDiaries[f] || []).filter(function(d) { return d.content && !d.content.startsWith("data:image"); });
-            }
-        }
-        if (appData.friends) {
-            for (var fi = 0; fi < appData.friends.length; fi++) {
-                var f = appData.friends[fi];
-                if (!appData.privateLexicon[f.id]) {
-                    appData.privateLexicon[f.id] = {
-                        wordCards: { "默认": [] },
-                        emojis: { "默认": [] },
-                        kaomojis: { "默认": [] },
-                        emoji: { "默认": [] },
-                        patPat: { "默认": [] },
-                        weather: { "默认": [] },
-                        status: { "默认": [] }
-                    };
-                }
-                if (!appData.friendChatSettings[f.id]) {
-    appData.friendChatSettings[f.id] = {
-        myPatSymbol: "🤍",
-        otherPatSymbol: "🤍",
-        patProbability: 30,
-        recall: {
-            enabled: true,
-            recallText: '已撤回',
-            otherRecallText: '对方撤回了',
-            timeLimit: 120,
-            otherRecallProbability: 1
-        }
-    };
-} else {
-    if (!appData.friendChatSettings[f.id].recall) {
-        appData.friendChatSettings[f.id].recall = {
-            enabled: true,
-            recallText: '已撤回',
-            otherRecallText: '对方撤回了',
-            timeLimit: 120,
-            otherRecallProbability: 1
-        };
-    } else {
-        var r = appData.friendChatSettings[f.id].recall;
-        if (r.enabled === undefined) r.enabled = true;
-        if (r.recallText === undefined) r.recallText = '已撤回';
-        if (r.otherRecallText === undefined) r.otherRecallText = '对方撤回了';
-        if (r.timeLimit === undefined) r.timeLimit = 120;
-        if (r.otherRecallProbability === undefined) r.otherRecallProbability = 1;
-    }
-}
-                if (!appData.friendMoments[f.id]) appData.friendMoments[f.id] = [];
-                if (!appData.friendDiaries[f.id]) appData.friendDiaries[f.id] = [];
-                if (!appData.letters[f.id]) appData.letters[f.id] = [];
-            }
-        }
+        
+        // ===== 13. 最后统一执行的后处理 =====
         restoreVoteTimers();
         buildSessionsFromData();
         startLetterCheckLoop();
         checkPendingQuestionnaires();
         applyGlobalTheme();
+        
     }).catch(function(err) {
         console.error('从 IndexedDB 加载失败:', err);
         alert('⚠️ 数据加载失败，将使用默认数据。\n\n错误信息: ' + err.message);
+        initDefaultData();
         restoreVoteTimers();
         buildSessionsFromData();
         startLetterCheckLoop();
